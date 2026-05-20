@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
-use glow::{HasContext, NativeBuffer, NativeProgram, NativeUniformLocation};
+use glow::{HasContext, NativeBuffer, NativeProgram, NativeUniformLocation, NativeVertexArray};
 
 use crate::commands::{Command, CommandQueue, RenderContext};
 use crate::texture::TextureId;
@@ -23,34 +23,43 @@ impl Command for DrawMonochromeSprite {
     }
 }
 
+// GPU-side instance data; excludes texture_id which is CPU-only.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SpriteInstance {
+    color:  (f32, f32, f32, f32),
+    origin: (f32, f32, f32),
+    size:   (f32, f32),
+    region: (f32, f32, f32, f32),
+}
+unsafe impl bytemuck::Pod for SpriteInstance {}
+unsafe impl bytemuck::Zeroable for SpriteInstance {
+    fn zeroed() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+impl From<&DrawMonochromeSprite> for SpriteInstance {
+    fn from(s: &DrawMonochromeSprite) -> Self {
+        Self {
+            color:  s.color,
+            origin: s.origin,
+            size:   s.size,
+            region: s.region,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct MonoSpriteQueue {
     shader_program:         Option<NativeProgram>,
+    vao:                    Option<NativeVertexArray>,
     vbo:                    Option<NativeBuffer>,
+    ibo:                    Option<NativeBuffer>,
     u_viewport_inv_res_loc: Option<NativeUniformLocation>,
     u_tex_inv_size_loc:     Option<NativeUniformLocation>,
     u_texture_loc:          Option<NativeUniformLocation>,
     batches:                HashMap<TextureId, Vec<DrawMonochromeSprite>>,
-}
-
-// Interleaved vertex layout: aPos(2) aColor(4) aOrigin(3) aSize(2) aRegion(4) = 15 floats/vertex
-fn build_sprite_verts(sprites: &[DrawMonochromeSprite]) -> Vec<f32> {
-    #[rustfmt::skip]
-    const CORNERS: [(f32, f32); 6] = [
-        (-0.5,  0.5), ( 0.5,  0.5), (-0.5, -0.5),
-        ( 0.5,  0.5), ( 0.5, -0.5), (-0.5, -0.5),
-    ];
-    let mut v = Vec::with_capacity(sprites.len() * 6 * 15);
-    for s in sprites {
-        let (cr, cg, cb, ca) = s.color;
-        let (ox, oy, oz) = s.origin;
-        let (sw, sh) = s.size;
-        let (rx, ry, rw, rh) = s.region;
-        for (px, py) in CORNERS {
-            v.extend_from_slice(&[px, py, cr, cg, cb, ca, ox, oy, oz, sw, sh, rx, ry, rw, rh]);
-        }
-    }
-    v
 }
 
 impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
@@ -63,15 +72,15 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
             // accounting for the Y-flip between screen space (Y down) and texture space (Y down).
             // uv_frac.x = aPos.x + 0.5  (left→0, right→1)
             // uv_frac.y = 0.5 - aPos.y  (top→0, bottom→1)
-            let vs_src = r#"#version 100
-                attribute vec2 aPos;
-                attribute vec4 aColor;
-                attribute vec3 aOrigin;
-                attribute vec2 aSize;
-                attribute vec4 aRegion;
+            let vs_src = r#"#version 300 es
+                layout(location = 0) in vec2 aPos;
+                layout(location = 1) in vec4 aColor;
+                layout(location = 2) in vec3 aOrigin;
+                layout(location = 3) in vec2 aSize;
+                layout(location = 4) in vec4 aRegion;
 
-                varying vec4 vColor;
-                varying vec2 vUV;
+                out vec4 vColor;
+                out vec2 vUV;
 
                 uniform vec2 uViewportInvRes;
                 uniform vec2 uTexInvSize;
@@ -98,17 +107,17 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
                 panic!("vertex shader compile error: {}", gl.get_shader_info_log(vs));
             }
 
-            // Texture is R8 (uploaded as GL_LUMINANCE on GLES 2.0).
-            // The red channel acts as an alpha mask multiplied with the tint color's alpha.
-            let fs_src = r#"#version 100
+            // Texture is R8. The red channel acts as an alpha mask multiplied with the tint color's alpha.
+            let fs_src = r#"#version 300 es
                 precision mediump float;
-                varying vec4 vColor;
-                varying vec2 vUV;
+                in vec4 vColor;
+                in vec2 vUV;
                 uniform sampler2D uTexture;
+                out vec4 fragColor;
 
                 void main() {
-                    float mask   = texture2D(uTexture, vUV).r;
-                    gl_FragColor = vec4(vColor.rgb, vColor.a * mask);
+                    float mask = texture(uTexture, vUV).r;
+                    fragColor  = vec4(vColor.rgb, vColor.a * mask);
                 }
             "#;
 
@@ -123,11 +132,6 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
 
             gl.attach_shader(program, vs);
             gl.attach_shader(program, fs);
-            gl.bind_attrib_location(program, 0, "aPos");
-            gl.bind_attrib_location(program, 1, "aColor");
-            gl.bind_attrib_location(program, 2, "aOrigin");
-            gl.bind_attrib_location(program, 3, "aSize");
-            gl.bind_attrib_location(program, 4, "aRegion");
             gl.link_program(program);
             if !gl.get_program_link_status(program) {
                 panic!("shader link error: {}", gl.get_program_info_log(program));
@@ -139,7 +143,54 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
             self.u_tex_inv_size_loc     = gl.get_uniform_location(program, "uTexInvSize");
             self.u_texture_loc          = gl.get_uniform_location(program, "uTexture");
             self.shader_program = Some(program);
+
+            self.vao = Some(gl.create_vertex_array().expect("glCreateVertexArray"));
+            gl.bind_vertex_array(self.vao);
+
             self.vbo = Some(gl.create_buffer().expect("glCreateBuffer"));
+            gl.bind_buffer(glow::ARRAY_BUFFER, self.vbo);
+            #[rustfmt::skip]
+            let vertices: [f32; 8] = [
+                -0.5,  0.5,   // TL
+                 0.5,  0.5,   // TR
+                -0.5, -0.5,   // BL
+                 0.5, -0.5,   // BR
+            ];
+            gl.buffer_data_u8_slice(
+                glow::ARRAY_BUFFER,
+                bytemuck::cast_slice(&vertices),
+                glow::STATIC_DRAW,
+            );
+            gl.enable_vertex_attrib_array(0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, (2 * size_of::<f32>()) as i32, 0);
+
+            self.ibo = Some(gl.create_buffer().expect("glCreateBuffer"));
+            gl.bind_buffer(glow::ARRAY_BUFFER, self.ibo);
+            gl.buffer_data_size(glow::ARRAY_BUFFER, 1024 * 1024, glow::DYNAMIC_DRAW);
+
+            let stride = size_of::<SpriteInstance>() as i32;
+
+            // aColor — offset 0
+            gl.enable_vertex_attrib_array(1);
+            gl.vertex_attrib_pointer_f32(1, 4, glow::FLOAT, false, stride, 0);
+            gl.vertex_attrib_divisor(1, 1);
+
+            // aOrigin — offset 16
+            gl.enable_vertex_attrib_array(2);
+            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, stride, 4 * size_of::<f32>() as i32);
+            gl.vertex_attrib_divisor(2, 1);
+
+            // aSize — offset 28
+            gl.enable_vertex_attrib_array(3);
+            gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, stride, 7 * size_of::<f32>() as i32);
+            gl.vertex_attrib_divisor(3, 1);
+
+            // aRegion — offset 36
+            gl.enable_vertex_attrib_array(4);
+            gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, stride, 9 * size_of::<f32>() as i32);
+            gl.vertex_attrib_divisor(4, 1);
+
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
         }
     }
 
@@ -161,23 +212,10 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
         let vp_w = ctx.viewport_width as f32;
         let vp_h = ctx.viewport_height as f32;
 
-        // aPos(2) aColor(4) aOrigin(3) aSize(2) aRegion(4) = 15 floats/vertex
-        const STRIDE: i32 = 15 * size_of::<f32>() as i32;
-
         unsafe {
             gl.use_program(Some(program));
-            gl.bind_buffer(glow::ARRAY_BUFFER, self.vbo);
-
-            gl.enable_vertex_attrib_array(0);
-            gl.enable_vertex_attrib_array(1);
-            gl.enable_vertex_attrib_array(2);
-            gl.enable_vertex_attrib_array(3);
-            gl.enable_vertex_attrib_array(4);
-            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, STRIDE, 0);
-            gl.vertex_attrib_pointer_f32(1, 4, glow::FLOAT, false, STRIDE,  2 * 4);
-            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, STRIDE,  6 * 4);
-            gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, STRIDE,  9 * 4);
-            gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, STRIDE, 11 * 4);
+            gl.bind_vertex_array(self.vao);
+            gl.bind_buffer(glow::ARRAY_BUFFER, self.ibo);
 
             gl.uniform_2_f32(self.u_viewport_inv_res_loc.as_ref(), 2.0 / vp_w, 2.0 / vp_h);
 
@@ -204,7 +242,6 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
                     continue;
                 };
 
-                // Back-to-front sort for correct alpha blending within each batch.
                 batch.sort_unstable_by(|a, b| a.origin.2.total_cmp(&b.origin.2));
 
                 gl.bind_texture(glow::TEXTURE_2D, Some(gpu_tex.handle));
@@ -214,13 +251,9 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
                     1.0 / gpu_tex.height as f32,
                 );
 
-                let verts = build_sprite_verts(batch);
-                gl.buffer_data_u8_slice(
-                    glow::ARRAY_BUFFER,
-                    bytemuck::cast_slice(&verts),
-                    glow::STREAM_DRAW,
-                );
-                gl.draw_arrays(glow::TRIANGLES, 0, (batch.len() * 6) as i32);
+                let instances: Vec<SpriteInstance> = batch.iter().map(SpriteInstance::from).collect();
+                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytemuck::cast_slice(&instances));
+                gl.draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, instances.len() as i32);
                 batch.clear();
             }
             self.batches.clear();
@@ -230,11 +263,6 @@ impl CommandQueue<DrawMonochromeSprite> for MonoSpriteQueue {
             gl.disable(glow::BLEND);
             gl.bind_texture(glow::TEXTURE_2D, None);
 
-            gl.disable_vertex_attrib_array(0);
-            gl.disable_vertex_attrib_array(1);
-            gl.disable_vertex_attrib_array(2);
-            gl.disable_vertex_attrib_array(3);
-            gl.disable_vertex_attrib_array(4);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.use_program(None);
         }
