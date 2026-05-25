@@ -1,7 +1,8 @@
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::wl_seat as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse, send};
 
 pub const CAP_POINTER: u32 = 1;
 pub const CAP_KEYBOARD: u32 = 2;
@@ -17,75 +18,51 @@ impl Event for SeatEvent {}
 
 pub struct WlSeat {
     conn: SharedConnection,
-    pub id: u32,
+    handle: Handle<proto::WlSeat>,
     pub capabilities: u32,
 }
 
 impl WlSeat {
     pub fn new(conn: SharedConnection) -> Self {
-        Self {
-            conn,
-            id: 0,
-            capabilities: 0,
-        }
+        Self { conn, handle: Handle::new(0), capabilities: 0 }
     }
 
     pub fn set_id(&mut self, id: u32) {
-        self.id = id;
+        self.handle = Handle::new(id);
     }
 
     pub fn get_pointer(&self) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let pointer_id = conn.alloc_id();
-        conn.message_builder(self.id, 0)
-            .write_u32(pointer_id)
-            .build();
-        pointer_id
+        let id = self.conn.borrow_mut().alloc_id();
+        send(&self.conn, &self.handle, &proto::request::GetPointer { id });
+        id
     }
 
     pub fn get_keyboard(&self) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let keyboard_id = conn.alloc_id();
-        conn.message_builder(self.id, 1)
-            .write_u32(keyboard_id)
-            .build();
-        keyboard_id
+        let id = self.conn.borrow_mut().alloc_id();
+        send(&self.conn, &self.handle, &proto::request::GetKeyboard { id });
+        id
     }
 
     pub fn get_touch(&self) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let touch_id = conn.alloc_id();
-        conn.message_builder(self.id, 2).write_u32(touch_id).build();
-        touch_id
+        let id = self.conn.borrow_mut().alloc_id();
+        send(&self.conn, &self.handle, &proto::request::GetTouch { id });
+        id
     }
 
-    pub fn release(&self) {
-        self.conn.borrow_mut().message_builder(self.id, 3).build();
-    }
-
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<SeatEvent> {
-        if ev.sender_id != self.id {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<SeatEvent> {
+        if raw.sender_id != self.handle.id {
             return None;
         }
-
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-
-        let event = match ev.opcode {
-            0 => {
-                let capabilities = r.read_u32().unwrap_or(0);
-                self.capabilities = capabilities;
-                SeatEvent::Capabilities { capabilities }
-            }
-            1 => {
-                let name = r.read_string().unwrap_or_default().to_string();
-                SeatEvent::Name { name }
-            }
-            _ => return None,
+        let ev = if let Some(e) = parse::<proto::event::Capabilities>(raw) {
+            self.capabilities = e.capabilities;
+            SeatEvent::Capabilities { capabilities: e.capabilities }
+        } else if let Some(e) = parse::<proto::event::Name>(raw) {
+            SeatEvent::Name { name: e.name }
+        } else {
+            return None;
         };
-
-        println!("[wl_seat] {:?}", event);
-        Some(event)
+        println!("[wl_seat] {:?}", ev);
+        Some(ev)
     }
 }
 

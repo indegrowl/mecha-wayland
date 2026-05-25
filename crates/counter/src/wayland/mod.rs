@@ -1,16 +1,4 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::env;
-use std::mem;
-use std::os::fd::{IntoRawFd, RawFd};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::rc::Rc;
-
-use io_uring::{opcode, types};
-
-use crate::wire::{HEADER_SIZE, MessageHeader};
-use io_ring::{IoEvent, IoToken, RingProxy};
+pub mod proto;
 
 pub mod wl_buffer;
 pub mod wl_callback;
@@ -37,8 +25,23 @@ pub use wl_seat::{CAP_KEYBOARD, CAP_POINTER, CAP_TOUCH, SeatEvent, WlSeat};
 pub use wl_shm::WlShm;
 pub use wl_surface::WlSurface;
 pub use wl_touch::{TouchEvent, WlTouch};
-pub use zwlr_layer_shell::{ZwlrLayerShellV1, ZwlrLayerSurfaceV1};
+pub use zwlr_layer_shell::{LayerSurfaceEvent, ZwlrLayerShellV1, ZwlrLayerSurfaceV1};
 pub use zwp_linux_dmabuf::{ZwpLinuxBufferParamsV1, ZwpLinuxDmabufV1};
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::env;
+use std::mem;
+use std::os::fd::{IntoRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use io_uring::{opcode, types};
+use io_ring::{IoEvent, IoToken, RingProxy};
+
+use crate::wire::{HEADER_SIZE, MessageBuilder, MessageHeader};
+use proto::{Handle, WaylandInterface, WaylandParse, WaylandSend};
 
 pub struct Initilised;
 impl app::event::Event for Initilised {}
@@ -52,7 +55,22 @@ pub struct WaylandRawEvent {
 
 impl app::event::Event for WaylandRawEvent {}
 
-// ── Shared connection handle ──────────────────────────────────────────────────
+// ── send / parse free functions ───────────────────────────────────────────────
+
+pub fn send<M: WaylandSend>(conn: &SharedConnection, handle: &Handle<M::Interface>, msg: &M) {
+    let mut c = conn.borrow_mut();
+    let builder = c.message_builder(handle.id, M::OPCODE);
+    msg.serialize(builder);
+}
+
+pub fn parse<M: WaylandParse>(raw: &WaylandRawEvent) -> Option<M> {
+    if raw.opcode != M::OPCODE {
+        return None;
+    }
+    M::deserialize(&raw.body)
+}
+
+// ── Connection ────────────────────────────────────────────────────────────────
 
 pub struct Connection {
     pub fd: RawFd,
@@ -72,12 +90,8 @@ impl Connection {
         self.fds_buf.push(fd);
     }
 
-    pub fn message_builder(
-        &mut self,
-        sender_id: u32,
-        opcode: u16,
-    ) -> crate::wire::MessageBuilder<'_> {
-        crate::wire::MessageBuilder::new(&mut self.write_buf, &mut self.fds_buf, sender_id, opcode)
+    pub fn message_builder(&mut self, sender_id: u32, opcode: u16) -> MessageBuilder<'_> {
+        MessageBuilder::new(&mut self.write_buf, &mut self.fds_buf, sender_id, opcode)
     }
 }
 
@@ -101,7 +115,6 @@ pub struct Wayland {
     pub callback: WlCallback,
     pub compositor: WlCompositor,
     pub surface: WlSurface,
-    // pub shm: WlShm,
     pub layer_shell: ZwlrLayerShellV1,
     pub layer_surface: ZwlrLayerSurfaceV1,
     pub seat: WlSeat,
@@ -128,7 +141,7 @@ impl Wayland {
             fd,
             write_buf: Vec::with_capacity(4096),
             fds_buf: Vec::new(),
-            next_id: 2, // 1 is reserved for wl_display
+            next_id: 2,
         }));
 
         Ok(Self {
@@ -137,7 +150,6 @@ impl Wayland {
             callback: WlCallback::new(conn.clone()),
             compositor: WlCompositor::new(conn.clone()),
             surface: WlSurface::new(conn.clone()),
-            // shm: WlShm::new(conn.clone()),
             layer_shell: ZwlrLayerShellV1::new(conn.clone()),
             layer_surface: ZwlrLayerSurfaceV1::new(conn.clone()),
             seat: WlSeat::new(conn.clone()),
@@ -158,8 +170,6 @@ impl Wayland {
         })
     }
 
-    /// Blocking sync roundtrip: populates the globals registry and binds
-    /// wl_compositor, wl_shm, and zwlr_layer_shell_v1. Called from app::Start.
     pub fn init(&mut self) {
         let fd = self.conn.borrow().fd;
 
@@ -171,14 +181,14 @@ impl Wayland {
         self.display.get_registry(registry_id);
         self.display.sync(callback_id);
 
-        unsafe { libc::fcntl(fd, libc::F_SETFL, 0) }; // clear O_NONBLOCK
+        unsafe { libc::fcntl(fd, libc::F_SETFL, 0) };
         self.flush_sync(fd);
 
         loop {
             let (sender_id, opcode, body) = self.recv_sync(fd);
-            self.display.handle_event(sender_id, opcode, &body);
-            self.registry.handle_event(sender_id, opcode, &body);
-            self.callback.handle_event(sender_id, opcode, &body);
+            self.display.handle_event_sync(sender_id, opcode, &body);
+            self.registry.handle_event_sync(sender_id, opcode, &body);
+            self.callback.handle_event_sync(sender_id, opcode, &body);
             if self.callback.is_done() {
                 break;
             }
@@ -188,58 +198,38 @@ impl Wayland {
             .registry
             .find("wl_compositor")
             .expect("wl_compositor not found");
-        let (shm_name, shm_ver) = self.registry.find("wl_shm").expect("wl_shm not found");
+        let (_shm_name, _shm_ver) = self.registry.find("wl_shm").expect("wl_shm not found");
         let (layer_name, layer_ver) = self
             .registry
             .find("zwlr_layer_shell_v1")
             .expect("zwlr_layer_shell_v1 not found");
 
         let comp_id = self.conn.borrow_mut().alloc_id();
-        // let shm_id = self.conn.borrow_mut().alloc_id();
         let layer_id = self.conn.borrow_mut().alloc_id();
 
         self.compositor.set_id(comp_id);
-        // self.shm.set_id(shm_id);
         self.layer_shell.set_id(layer_id);
 
-        self.registry
-            .bind(comp_name, "wl_compositor", comp_ver.min(4), comp_id);
-        // self.registry
-        //     .bind(shm_name, "wl_shm", shm_ver.min(1), shm_id);
-        self.registry.bind(
-            layer_name,
-            "zwlr_layer_shell_v1",
-            layer_ver.min(4),
-            layer_id,
-        );
+        self.registry.bind(comp_name, "wl_compositor", comp_ver.min(4), comp_id);
+        self.registry.bind(layer_name, "zwlr_layer_shell_v1", layer_ver.min(4), layer_id);
 
         if let Some((seat_name, seat_ver)) = self.registry.find("wl_seat") {
             let seat_id = self.conn.borrow_mut().alloc_id();
             self.seat.set_id(seat_id);
-            self.registry
-                .bind(seat_name, "wl_seat", seat_ver.min(7), seat_id);
+            self.registry.bind(seat_name, "wl_seat", seat_ver.min(7), seat_id);
         }
 
         if let Some((dmabuf_name, dmabuf_ver)) = self.registry.find("zwp_linux_dmabuf_v1") {
             let dmabuf_id = self.conn.borrow_mut().alloc_id();
             self.dmabuf.set_id(dmabuf_id);
-            self.registry.bind(
-                dmabuf_name,
-                "zwp_linux_dmabuf_v1",
-                dmabuf_ver.min(3),
-                dmabuf_id,
-            );
+            self.registry.bind(dmabuf_name, "zwp_linux_dmabuf_v1", dmabuf_ver.min(3), dmabuf_id);
         }
 
         self.flush_sync(fd);
-
         unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
-
         self.submit_read();
     }
 
-    /// Submit any pending writes. Uses sendmsg when FDs are queued,
-    /// otherwise submits an async io_uring Write.
     pub fn flush(&mut self) {
         if !self.conn.borrow().fds_buf.is_empty() {
             self.send_with_fds();
@@ -259,7 +249,6 @@ impl Wayland {
                     self.read_token = None;
                     if *result > 0 {
                         let new_bytes = &self.read_buf[..*result as usize];
-                        // Prepend any leftover bytes from the previous read.
                         let data = if self.recv_overflow.is_empty() {
                             new_bytes.to_vec()
                         } else {
@@ -287,7 +276,6 @@ impl Wayland {
             };
             let msg_size = header.size as usize;
             if msg_size < HEADER_SIZE || data[offset..].len() < msg_size {
-                // Incomplete or invalid message — save remainder for next read.
                 self.recv_overflow.extend_from_slice(&data[offset..]);
                 return;
             }
@@ -299,13 +287,10 @@ impl Wayland {
             });
             offset += msg_size;
         }
-        // Save any partial header bytes for the next read.
         if offset < data.len() {
             self.recv_overflow.extend_from_slice(&data[offset..]);
         }
     }
-
-    // ── async io_uring I/O ────────────────────────────────────────────────────
 
     fn submit_write(&mut self) {
         if self.write_token.is_some() || !self.write_in_flight.is_empty() {
@@ -318,8 +303,6 @@ impl Wayland {
             }
             mem::swap(&mut self.write_in_flight, &mut conn.write_buf);
         }
-        // SAFETY: write_in_flight is heap-allocated and not touched until the
-        // matching Completed event clears write_token.
         let sqe = opcode::Write::new(
             types::Fd(self.conn.borrow().fd),
             self.write_in_flight.as_ptr(),
@@ -334,8 +317,6 @@ impl Wayland {
         if self.read_token.is_some() {
             return;
         }
-        // SAFETY: read_buf is not touched until the matching Completed event
-        // clears read_token.
         let sqe = opcode::Read::new(
             types::Fd(self.conn.borrow().fd),
             self.read_buf.as_mut_ptr(),
@@ -345,8 +326,6 @@ impl Wayland {
         let token = self.ring_proxy.push(sqe);
         self.read_token = Some(token);
     }
-
-    // ── blocking I/O (init only) ──────────────────────────────────────────────
 
     fn flush_sync(&self, fd: RawFd) {
         let mut conn = self.conn.borrow_mut();
@@ -379,7 +358,6 @@ impl Wayland {
             assert!(n > 0, "wayland socket closed during init");
             offset += n as usize;
         }
-
         let sender_id = u32::from_ne_bytes(header[0..4].try_into().unwrap());
         let word2 = u32::from_ne_bytes(header[4..8].try_into().unwrap());
         let total_size = (word2 >> 16) as usize;
@@ -399,11 +377,9 @@ impl Wayland {
             assert!(n > 0, "wayland socket closed during init");
             offset += n as usize;
         }
-
         (sender_id, opcode, body)
     }
 
-    /// Blocking sendmsg with SCM_RIGHTS for messages that carry file descriptors.
     fn send_with_fds(&mut self) {
         let mut conn = self.conn.borrow_mut();
         if conn.write_buf.is_empty() {
@@ -464,7 +440,6 @@ macro_rules! register_wayland {
             .submodule(|wl| &mut wl.registry, register_wl_registry!())
             .submodule(|wl| &mut wl.callback, register_wl_callback!())
             .submodule(|wl| &mut wl.surface, register_wl_surface!())
-            // .submodule(|wl| &mut wl.shm, register_wl_shm!())
             .submodule(|wl| &mut wl.layer_surface, register_zwlr_layer_surface!())
             .submodule(|wl| &mut wl.seat, register_wl_seat!())
             .submodule(|wl| &mut wl.pointer, register_wl_pointer!())
@@ -475,16 +450,15 @@ macro_rules! register_wayland {
             .on(
                 |wl: &mut crate::wayland::Wayland, ev: &crate::wayland::SeatEvent| match ev {
                     crate::wayland::SeatEvent::Capabilities { capabilities } => {
-                        if (capabilities & crate::wayland::CAP_POINTER) != 0 && wl.pointer.id == 0 {
+                        if (capabilities & crate::wayland::CAP_POINTER) != 0 && wl.pointer.id() == 0 {
                             let id = wl.seat.get_pointer();
                             wl.pointer.set_id(id);
                         }
-                        if (capabilities & crate::wayland::CAP_KEYBOARD) != 0 && wl.keyboard.id == 0
-                        {
+                        if (capabilities & crate::wayland::CAP_KEYBOARD) != 0 && wl.keyboard.id() == 0 {
                             let id = wl.seat.get_keyboard();
                             wl.keyboard.set_id(id);
                         }
-                        if (capabilities & crate::wayland::CAP_TOUCH) != 0 && wl.touch.id == 0 {
+                        if (capabilities & crate::wayland::CAP_TOUCH) != 0 && wl.touch.id() == 0 {
                             let id = wl.seat.get_touch();
                             wl.touch.set_id(id);
                         }

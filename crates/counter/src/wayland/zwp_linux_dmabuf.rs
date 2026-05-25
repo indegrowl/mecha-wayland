@@ -3,8 +3,9 @@ use std::os::fd::RawFd;
 
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::zwp_linux_dmabuf as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse, send};
 
 #[derive(Debug)]
 pub enum DmabufEvent {
@@ -18,48 +19,41 @@ impl Event for DmabufEvent {}
 
 pub struct ZwpLinuxDmabufV1 {
     conn: SharedConnection,
-    pub id: u32,
+    handle: Handle<proto::ZwpLinuxDmabufV1>,
     pub formats: Vec<u32>,
 }
 
 impl ZwpLinuxDmabufV1 {
     pub fn new(conn: SharedConnection) -> Self {
-        Self { conn, id: 0, formats: Vec::new() }
+        Self { conn, handle: Handle::new(0), formats: Vec::new() }
     }
 
     pub fn set_id(&mut self, id: u32) {
-        self.id = id;
+        self.handle = Handle::new(id);
     }
 
-    // opcode 1: create_params(params_id: new_id) -> zwp_linux_buffer_params_v1
     pub fn create_params(&self) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let params_id = conn.alloc_id();
-        conn.message_builder(self.id, 1).write_u32(params_id).build();
+        let params_id = self.conn.borrow_mut().alloc_id();
+        send(&self.conn, &self.handle, &proto::dmabuf_request::CreateParams { params_id });
         params_id
     }
 
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<DmabufEvent> {
-        if ev.sender_id != self.id {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<DmabufEvent> {
+        if raw.sender_id != self.handle.id {
             return None;
         }
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-        let event = match ev.opcode {
-            0 => {
-                let format = r.read_u32().unwrap_or(0);
-                self.formats.push(format);
-                DmabufEvent::Format { format }
-            }
-            1 => {
-                let format = r.read_u32().unwrap_or(0);
-                let modifier_hi = r.read_u32().unwrap_or(0);
-                let modifier_lo = r.read_u32().unwrap_or(0);
-                DmabufEvent::Modifier { format, modifier_hi, modifier_lo }
-            }
-            _ => return None,
-        };
-        Some(event)
+        if let Some(e) = parse::<proto::dmabuf_event::Format>(raw) {
+            self.formats.push(e.format);
+            Some(DmabufEvent::Format { format: e.format })
+        } else if let Some(e) = parse::<proto::dmabuf_event::Modifier>(raw) {
+            Some(DmabufEvent::Modifier {
+                format: e.format,
+                modifier_hi: e.modifier_hi,
+                modifier_lo: e.modifier_lo,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -79,14 +73,12 @@ impl ZwpLinuxBufferParamsV1 {
         self.active_ids.insert(params_id);
     }
 
-    // opcode 0: destroy
     pub fn destroy(&mut self, params_id: u32) {
         self.active_ids.remove(&params_id);
-        self.conn.borrow_mut().message_builder(params_id, 0).build();
+        let h = Handle::<proto::ZwpLinuxBufferParamsV1>::new(params_id);
+        send(&self.conn, &h, &proto::params_request::Destroy);
     }
 
-    // opcode 1: add(fd, plane_idx, offset, stride, modifier_hi, modifier_lo)
-    // fd is sent out-of-band via SCM_RIGHTS; flush() must use sendmsg after this call.
     pub fn add(
         &self,
         params_id: u32,
@@ -97,19 +89,14 @@ impl ZwpLinuxBufferParamsV1 {
         modifier_hi: u32,
         modifier_lo: u32,
     ) {
-        self.conn
-            .borrow_mut()
-            .message_builder(params_id, 1)
-            .write_fd(fd)
-            .write_u32(plane_idx)
-            .write_u32(offset)
-            .write_u32(stride)
-            .write_u32(modifier_hi)
-            .write_u32(modifier_lo)
-            .build();
+        let h = Handle::<proto::ZwpLinuxBufferParamsV1>::new(params_id);
+        send(
+            &self.conn,
+            &h,
+            &proto::params_request::Add { fd, plane_idx, offset, stride, modifier_hi, modifier_lo },
+        );
     }
 
-    // opcode 3: create_immed(buffer_id: new_id, width, height, format, flags) -> wl_buffer
     pub fn create_immed(
         &self,
         params_id: u32,
@@ -118,15 +105,13 @@ impl ZwpLinuxBufferParamsV1 {
         format: u32,
         flags: u32,
     ) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let buf_id = conn.alloc_id();
-        conn.message_builder(params_id, 3)
-            .write_u32(buf_id)
-            .write_i32(width)
-            .write_i32(height)
-            .write_u32(format)
-            .write_u32(flags)
-            .build();
+        let buf_id = self.conn.borrow_mut().alloc_id();
+        let h = Handle::<proto::ZwpLinuxBufferParamsV1>::new(params_id);
+        send(
+            &self.conn,
+            &h,
+            &proto::params_request::CreateImmed { buffer_id: buf_id, width, height, format, flags },
+        );
         buf_id
     }
 }

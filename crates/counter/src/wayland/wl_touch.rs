@@ -1,7 +1,8 @@
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::wl_touch as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse};
 
 #[derive(Debug, Clone)]
 pub enum TouchEvent {
@@ -17,79 +18,54 @@ pub enum TouchEvent {
 impl Event for TouchEvent {}
 
 pub struct WlTouch {
-    conn: SharedConnection,
-    pub id: u32,
+    _conn: SharedConnection,
+    handle: Handle<proto::WlTouch>,
 }
 
 impl WlTouch {
     pub fn new(conn: SharedConnection) -> Self {
-        Self {
-            conn,
-            id: 0,
-        }
+        Self { _conn: conn, handle: Handle::new(0) }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.handle.id
     }
 
     pub fn set_id(&mut self, id: u32) {
-        self.id = id;
+        self.handle = Handle::new(id);
     }
 
-    pub fn release(&self) {
-        self.conn.borrow_mut().message_builder(self.id, 0).build();
-    }
-
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<TouchEvent> {
-        if ev.sender_id != self.id {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<TouchEvent> {
+        if raw.sender_id != self.handle.id {
             return None;
         }
-
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-
-        let event = match ev.opcode {
-            0 => TouchEvent::Down {
-                serial: r.read_u32()?,
-                time: r.read_u32()?,
-                surface: r.read_u32()?,
-                id: r.read_i32()?,
-                x: r.read_fixed()?,
-                y: r.read_fixed()?,
-            },
-            1 => TouchEvent::Up {
-                serial: r.read_u32()?,
-                time: r.read_u32()?,
-                id: r.read_i32()?,
-            },
-            2 => TouchEvent::Motion {
-                time: r.read_u32()?,
-                id: r.read_i32()?,
-                x: r.read_fixed()?,
-                y: r.read_fixed()?,
-            },
-            3 => TouchEvent::Frame,
-            4 => TouchEvent::Cancel,
-            5 => TouchEvent::Shape {
-                id: r.read_i32()?,
-                major: r.read_fixed()?,
-                minor: r.read_fixed()?,
-            },
-            6 => TouchEvent::Orientation {
-                id: r.read_i32()?,
-                orientation: r.read_fixed()?,
-            },
-            _ => return None,
+        let ev = if let Some(e) = parse::<proto::event::Down>(raw) {
+            TouchEvent::Down { serial: e.serial, time: e.time, surface: e.surface, id: e.id, x: e.x, y: e.y }
+        } else if let Some(e) = parse::<proto::event::Up>(raw) {
+            TouchEvent::Up { serial: e.serial, time: e.time, id: e.id }
+        } else if let Some(e) = parse::<proto::event::Motion>(raw) {
+            TouchEvent::Motion { time: e.time, id: e.id, x: e.x, y: e.y }
+        } else if parse::<proto::event::Frame>(raw).is_some() {
+            TouchEvent::Frame
+        } else if parse::<proto::event::Cancel>(raw).is_some() {
+            TouchEvent::Cancel
+        } else if let Some(e) = parse::<proto::event::Shape>(raw) {
+            TouchEvent::Shape { id: e.id, major: e.major, minor: e.minor }
+        } else if let Some(e) = parse::<proto::event::Orientation>(raw) {
+            TouchEvent::Orientation { id: e.id, orientation: e.orientation }
+        } else {
+            return None;
         };
-
-        println!("[wl_touch] {:?}", event);
-        Some(event)
+        println!("[wl_touch] {:?}", ev);
+        Some(ev)
     }
 }
 
 #[macro_export]
 macro_rules! register_wl_touch {
     () => {
-        app::module::Module::<crate::wayland::WlTouch>::new()
-            .processor(|s: &mut crate::wayland::WlTouch, ev: &crate::wayland::WaylandRawEvent| {
-                s.process(ev)
-            })
+        app::module::Module::<crate::wayland::WlTouch>::new().processor(
+            |s: &mut crate::wayland::WlTouch, ev: &crate::wayland::WaylandRawEvent| s.process(ev),
+        )
     };
 }

@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::wl_surface as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse, send};
 
 #[derive(Debug)]
 pub enum SurfaceEvent {
@@ -13,81 +14,56 @@ pub enum SurfaceEvent {
 
 impl Event for SurfaceEvent {}
 
-pub struct SurfaceState;
-
 pub struct WlSurface {
     conn: SharedConnection,
-    surfaces: HashMap<u32, SurfaceState>,
+    surface_ids: HashMap<u32, ()>,
 }
 
 impl WlSurface {
     pub fn new(conn: SharedConnection) -> Self {
-        Self {
-            conn,
-            surfaces: HashMap::new(),
-        }
+        Self { conn, surface_ids: HashMap::new() }
     }
 
     pub fn register(&mut self, id: u32) {
-        self.surfaces.insert(id, SurfaceState);
+        self.surface_ids.insert(id, ());
     }
 
-    // opcode 1: attach(buffer: object, x: int, y: int)
     pub fn attach(&self, id: u32, buffer_id: u32, x: i32, y: i32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 1)
-            .write_u32(buffer_id)
-            .write_i32(x)
-            .write_i32(y)
-            .build();
+        let h = Handle::<proto::WlSurface>::new(id);
+        send(&self.conn, &h, &proto::request::Attach { buffer: buffer_id, x, y });
     }
 
-    // opcode 2: damage(x: int, y: int, width: int, height: int)
     pub fn damage(&self, id: u32, x: i32, y: i32, width: i32, height: i32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 2)
-            .write_i32(x)
-            .write_i32(y)
-            .write_i32(width)
-            .write_i32(height)
-            .build();
+        let h = Handle::<proto::WlSurface>::new(id);
+        send(&self.conn, &h, &proto::request::Damage { x, y, width, height });
     }
 
-    // opcode 3: frame() -> wl_callback id
     pub fn frame(&self, surface_id: u32) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let cb_id = conn.alloc_id();
-        conn.message_builder(surface_id, 3).write_u32(cb_id).build();
+        let cb_id = self.conn.borrow_mut().alloc_id();
+        let h = Handle::<proto::WlSurface>::new(surface_id);
+        send(&self.conn, &h, &proto::request::Frame { callback: cb_id });
         cb_id
     }
 
-    // opcode 6: commit()
     pub fn commit(&self, id: u32) {
-        self.conn.borrow_mut().message_builder(id, 6).build();
+        let h = Handle::<proto::WlSurface>::new(id);
+        send(&self.conn, &h, &proto::request::Commit);
     }
 
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<SurfaceEvent> {
-        if !self.surfaces.contains_key(&ev.sender_id) {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<SurfaceEvent> {
+        if !self.surface_ids.contains_key(&raw.sender_id) {
             return None;
         }
-        let id = ev.sender_id;
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-        let event = match ev.opcode {
-            0 => {
-                let output = r.read_u32().unwrap_or(0);
-                SurfaceEvent::Enter { id, output }
-            }
-            1 => {
-                let output = r.read_u32().unwrap_or(0);
-                SurfaceEvent::Leave { id, output }
-            }
-            _ => return None,
+        let id = raw.sender_id;
+        let ev = if let Some(e) = parse::<proto::event::Enter>(raw) {
+            SurfaceEvent::Enter { id, output: e.output }
+        } else if let Some(e) = parse::<proto::event::Leave>(raw) {
+            SurfaceEvent::Leave { id, output: e.output }
+        } else {
+            return None;
         };
-        println!("[wl_surface] {:?}", event);
-        Some(event)
+        println!("[wl_surface] {:?}", ev);
+        Some(ev)
     }
 }
 

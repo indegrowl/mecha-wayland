@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::wl_registry as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse, send};
 
 #[derive(Debug)]
 pub enum RegistryEvent {
@@ -15,17 +16,17 @@ impl Event for RegistryEvent {}
 
 pub struct WlRegistry {
     conn: SharedConnection,
-    id: u32,
+    pub handle: Handle<proto::WlRegistry>,
     globals: HashMap<u32, (String, u32)>,
 }
 
 impl WlRegistry {
     pub fn new(conn: SharedConnection) -> Self {
-        Self { conn, id: 0, globals: HashMap::new() }
+        Self { conn, handle: Handle::new(0), globals: HashMap::new() }
     }
 
     pub fn set_id(&mut self, id: u32) {
-        self.id = id;
+        self.handle = Handle::new(id);
     }
 
     pub fn find(&self, interface: &str) -> Option<(u32, u32)> {
@@ -35,62 +36,42 @@ impl WlRegistry {
             .map(|(name, (_, ver))| (*name, *ver))
     }
 
-    // opcode 0: bind(name: uint, interface: string, version: uint, id: new_id)
     pub fn bind(&self, name: u32, interface: &str, version: u32, new_id: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(self.id, 0)
-            .write_u32(name)
-            .write_string(interface)
-            .write_u32(version)
-            .write_u32(new_id)
-            .build();
+        send(&self.conn, &self.handle, &proto::request::Bind {
+            name,
+            interface: interface.to_string(),
+            version,
+            new_id,
+        });
     }
 
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<RegistryEvent> {
-        if ev.sender_id != self.id {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<RegistryEvent> {
+        if raw.sender_id != self.handle.id {
             return None;
         }
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-        let event = match ev.opcode {
-            0 => {
-                let name = r.read_u32().unwrap_or(0);
-                let interface = r.read_string().unwrap_or("").to_string();
-                let version = r.read_u32().unwrap_or(0);
-                self.globals.insert(name, (interface.clone(), version));
-                RegistryEvent::Global { name, interface, version }
-            }
-            1 => {
-                let name = r.read_u32().unwrap_or(0);
-                self.globals.remove(&name);
-                RegistryEvent::GlobalRemove { name }
-            }
-            _ => return None,
+        let ev = if let Some(e) = parse::<proto::event::Global>(raw) {
+            self.globals.insert(e.name, (e.interface.clone(), e.version));
+            RegistryEvent::Global { name: e.name, interface: e.interface, version: e.version }
+        } else if let Some(e) = parse::<proto::event::GlobalRemove>(raw) {
+            self.globals.remove(&e.name);
+            RegistryEvent::GlobalRemove { name: e.name }
+        } else {
+            return None;
         };
-        println!("[wl_registry] {:?}", event);
-        Some(event)
+        println!("[wl_registry] {:?}", ev);
+        Some(ev)
     }
 
-    pub fn handle_event(&mut self, sender_id: u32, opcode: u16, body: &[u8]) {
-        if sender_id != self.id {
+    pub fn handle_event_sync(&mut self, sender_id: u32, opcode: u16, body: &[u8]) {
+        if sender_id != self.handle.id {
             return;
         }
-        let mut fds = vec![];
-        let mut r = MessageReader::new(body, &mut fds);
-        match opcode {
-            0 => {
-                let name = r.read_u32().unwrap_or(0);
-                let interface = r.read_string().unwrap_or("").to_string();
-                let version = r.read_u32().unwrap_or(0);
-                println!("[wl_registry] global {} {} v{}", name, interface, version);
-                self.globals.insert(name, (interface, version));
-            }
-            1 => {
-                let name = r.read_u32().unwrap_or(0);
-                self.globals.remove(&name);
-            }
-            _ => {}
+        let raw = WaylandRawEvent { sender_id, opcode, body: body.to_vec() };
+        if let Some(e) = parse::<proto::event::Global>(&raw) {
+            println!("[wl_registry] global {} {} v{}", e.name, e.interface, e.version);
+            self.globals.insert(e.name, (e.interface, e.version));
+        } else if let Some(e) = parse::<proto::event::GlobalRemove>(&raw) {
+            self.globals.remove(&e.name);
         }
     }
 }
@@ -98,9 +79,8 @@ impl WlRegistry {
 #[macro_export]
 macro_rules! register_wl_registry {
     () => {
-        app::module::Module::<crate::wayland::WlRegistry>::new()
-            .processor(|r: &mut crate::wayland::WlRegistry, ev: &crate::wayland::WaylandRawEvent| {
-                r.process(ev)
-            })
+        app::module::Module::<crate::wayland::WlRegistry>::new().processor(
+            |r: &mut crate::wayland::WlRegistry, ev: &crate::wayland::WaylandRawEvent| r.process(ev),
+        )
     };
 }

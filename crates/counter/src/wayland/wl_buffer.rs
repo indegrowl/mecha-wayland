@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
+use crate::wayland::proto::wl_buffer as proto;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse};
 
 #[derive(Debug)]
 pub enum WlBufferEvent {
@@ -25,11 +26,12 @@ impl WlBuffer {
         self.ids.insert(id);
     }
 
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<WlBufferEvent> {
-        if !self.ids.contains(&ev.sender_id) || ev.opcode != 0 {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<WlBufferEvent> {
+        if !self.ids.contains(&raw.sender_id) {
             return None;
         }
-        Some(WlBufferEvent::Release { id: ev.sender_id })
+        parse::<proto::event::Release>(raw)
+            .map(|_| WlBufferEvent::Release { id: raw.sender_id })
     }
 }
 

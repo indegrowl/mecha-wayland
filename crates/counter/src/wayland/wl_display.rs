@@ -1,96 +1,59 @@
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::wl_display as proto;
+use crate::wayland::proto::{Handle, WaylandParse};
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse, send};
 
 #[derive(Debug)]
 pub enum DisplayEvent {
-    Error {
-        object_id: u32,
-        code: u32,
-        message: String,
-    },
-    DeleteId {
-        id: u32,
-    },
+    Error { object_id: u32, code: u32, message: String },
+    DeleteId { id: u32 },
 }
 
 impl Event for DisplayEvent {}
 
 pub struct WlDisplay {
     conn: SharedConnection,
+    handle: Handle<proto::WlDisplay>,
 }
 
 impl WlDisplay {
-    pub const OBJECT_ID: u32 = 1;
-
     pub fn new(conn: SharedConnection) -> Self {
-        Self { conn }
+        Self { conn, handle: Handle::new(1) }
     }
 
-    // opcode 0: sync(callback: new_id)
     pub fn sync(&self, callback_id: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(Self::OBJECT_ID, 0)
-            .write_u32(callback_id)
-            .build();
+        send(&self.conn, &self.handle, &proto::request::Sync { callback: callback_id });
     }
 
-    // opcode 1: get_registry(registry: new_id)
     pub fn get_registry(&self, registry_id: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(Self::OBJECT_ID, 1)
-            .write_u32(registry_id)
-            .build();
+        send(&self.conn, &self.handle, &proto::request::GetRegistry { registry: registry_id });
     }
 
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<DisplayEvent> {
-        if ev.sender_id != Self::OBJECT_ID {
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<DisplayEvent> {
+        if raw.sender_id != self.handle.id {
             return None;
         }
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-        let event = match ev.opcode {
-            0 => {
-                let object_id = r.read_u32().unwrap_or(0);
-                let code = r.read_u32().unwrap_or(0);
-                let message = r.read_string().unwrap_or("unknown").to_string();
-                DisplayEvent::Error {
-                    object_id,
-                    code,
-                    message,
-                }
-            }
-            1 => {
-                let id = r.read_u32().unwrap_or(0);
-                DisplayEvent::DeleteId { id }
-            }
-            _ => return None,
+        let ev = if let Some(e) = parse::<proto::event::Error>(raw) {
+            DisplayEvent::Error { object_id: e.object_id, code: e.code, message: e.message }
+        } else if let Some(e) = parse::<proto::event::DeleteId>(raw) {
+            DisplayEvent::DeleteId { id: e.id }
+        } else {
+            return None;
         };
-        println!("[wl_display] {:?}", event);
-        Some(event)
+        println!("[wl_display] {:?}", ev);
+        Some(ev)
     }
 
-    pub fn handle_event(&mut self, sender_id: u32, opcode: u16, body: &[u8]) {
-        if sender_id != Self::OBJECT_ID {
+    pub fn handle_event_sync(&mut self, sender_id: u32, opcode: u16, body: &[u8]) {
+        if sender_id != self.handle.id {
             return;
         }
-        let mut fds = vec![];
-        let mut r = MessageReader::new(body, &mut fds);
-        match opcode {
-            0 => {
-                let _obj = r.read_u32();
-                let code = r.read_u32().unwrap_or(0);
-                let msg = r.read_string().unwrap_or("unknown");
-                eprintln!("[wl_display] error code={} msg={}", code, msg);
-            }
-            1 => {
-                let id = r.read_u32().unwrap_or(0);
-                println!("[wl_display] delete_id {}", id);
-            }
-            _ => {}
+        let raw = WaylandRawEvent { sender_id, opcode, body: body.to_vec() };
+        if let Some(e) = parse::<proto::event::Error>(&raw) {
+            eprintln!("[wl_display] error code={} msg={}", e.code, e.message);
+        } else if let Some(e) = parse::<proto::event::DeleteId>(&raw) {
+            println!("[wl_display] delete_id {}", e.id);
         }
     }
 }

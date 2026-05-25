@@ -1,37 +1,24 @@
-use crate::wayland::SharedConnection;
+use crate::wayland::proto::wl_compositor as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, send};
 
 pub struct WlCompositor {
     conn: SharedConnection,
-    pub id: u32,
+    handle: Handle<proto::WlCompositor>,
 }
 
 impl WlCompositor {
     pub fn new(conn: SharedConnection) -> Self {
-        Self { conn, id: 0 }
+        Self { conn, handle: Handle::new(0) }
     }
 
     pub fn set_id(&mut self, id: u32) {
-        self.id = id;
+        self.handle = Handle::new(id);
     }
 
-    // opcode 0: create_surface(id: new_id) -> surface object_id
     pub fn create_surface(&self) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let surface_id = conn.alloc_id();
-        conn.message_builder(self.id, 0)
-            .write_u32(surface_id)
-            .build();
+        let surface_id = self.conn.borrow_mut().alloc_id();
+        send(&self.conn, &self.handle, &proto::request::CreateSurface { id: surface_id });
         surface_id
     }
-
-    pub fn handle_event(&mut self, _sender_id: u32, _opcode: u16, _body: &[u8]) {
-        // wl_compositor has no events
-    }
-}
-
-#[macro_export]
-macro_rules! register_wl_compositor {
-    () => {
-        app::module::Module::<crate::wayland::wl_compositor::WlCompositor>::new()
-    };
 }

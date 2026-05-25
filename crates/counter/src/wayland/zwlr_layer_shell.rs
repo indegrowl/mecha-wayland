@@ -2,61 +2,12 @@ use std::collections::HashMap;
 
 use app::event::Event;
 
-use crate::wayland::{SharedConnection, WaylandRawEvent};
-use crate::wire::MessageReader;
+use crate::wayland::proto::zwlr_layer_shell as proto;
+use crate::wayland::proto::Handle;
+use crate::wayland::{SharedConnection, WaylandRawEvent, parse, send};
 
-// ── Layer enum ────────────────────────────────────────────────────────────────
-pub const LAYER_BACKGROUND: u32 = 0;
-pub const LAYER_BOTTOM: u32 = 1;
-pub const LAYER_TOP: u32 = 2;
-pub const LAYER_OVERLAY: u32 = 3;
-
-// ── Anchor bitfield ───────────────────────────────────────────────────────────
-pub const ANCHOR_TOP: u32 = 1;
-pub const ANCHOR_BOTTOM: u32 = 2;
-pub const ANCHOR_LEFT: u32 = 4;
-pub const ANCHOR_RIGHT: u32 = 8;
-
-// ── ZwlrLayerShellV1 ─────────────────────────────────────────────────────────
-
-pub struct ZwlrLayerShellV1 {
-    conn: SharedConnection,
-    pub id: u32,
-}
-
-impl ZwlrLayerShellV1 {
-    pub fn new(conn: SharedConnection) -> Self {
-        Self { conn, id: 0 }
-    }
-
-    pub fn set_id(&mut self, id: u32) {
-        self.id = id;
-    }
-
-    // opcode 0: get_layer_surface(id: new_id, surface: object, output: object,
-    //                             layer: uint, namespace: string) -> layer_surface_id
-    // Pass output_id = 0 (null object) for any output.
-    pub fn get_layer_surface(
-        &self,
-        surface_id: u32,
-        output_id: u32,
-        layer: u32,
-        namespace: &str,
-    ) -> u32 {
-        let mut conn = self.conn.borrow_mut();
-        let layer_surface_id = conn.alloc_id();
-        conn.message_builder(self.id, 0)
-            .write_u32(layer_surface_id)
-            .write_u32(surface_id)
-            .write_u32(output_id)
-            .write_u32(layer)
-            .write_string(namespace)
-            .build();
-        layer_surface_id
-    }
-}
-
-// ── ZwlrLayerSurfaceV1 ────────────────────────────────────────────────────────
+pub use proto::{ANCHOR_BOTTOM, ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_TOP};
+pub use proto::{LAYER_BACKGROUND, LAYER_BOTTOM, LAYER_OVERLAY, LAYER_TOP};
 
 #[derive(Debug)]
 pub enum LayerSurfaceEvent {
@@ -66,6 +17,47 @@ pub enum LayerSurfaceEvent {
 
 impl Event for LayerSurfaceEvent {}
 
+// ── ZwlrLayerShellV1 ─────────────────────────────────────────────────────────
+
+pub struct ZwlrLayerShellV1 {
+    conn: SharedConnection,
+    handle: Handle<proto::ZwlrLayerShellV1>,
+}
+
+impl ZwlrLayerShellV1 {
+    pub fn new(conn: SharedConnection) -> Self {
+        Self { conn, handle: Handle::new(0) }
+    }
+
+    pub fn set_id(&mut self, id: u32) {
+        self.handle = Handle::new(id);
+    }
+
+    pub fn get_layer_surface(
+        &self,
+        surface_id: u32,
+        output_id: u32,
+        layer: u32,
+        namespace: &str,
+    ) -> u32 {
+        let layer_surface_id = self.conn.borrow_mut().alloc_id();
+        send(
+            &self.conn,
+            &self.handle,
+            &proto::layer_shell_request::GetLayerSurface {
+                id: layer_surface_id,
+                surface: surface_id,
+                output: output_id,
+                layer,
+                namespace: namespace.to_string(),
+            },
+        );
+        layer_surface_id
+    }
+}
+
+// ── ZwlrLayerSurfaceV1 ────────────────────────────────────────────────────────
+
 pub struct LayerSurfaceState {
     pub closed: bool,
     pub width: u32,
@@ -74,7 +66,7 @@ pub struct LayerSurfaceState {
 
 pub struct ZwlrLayerSurfaceV1 {
     conn: SharedConnection,
-    pub surfaces: HashMap<u32, LayerSurfaceState>,
+    surfaces: HashMap<u32, LayerSurfaceState>,
 }
 
 impl ZwlrLayerSurfaceV1 {
@@ -83,102 +75,64 @@ impl ZwlrLayerSurfaceV1 {
     }
 
     pub fn register(&mut self, id: u32) {
-        self.surfaces.insert(id, LayerSurfaceState {
-            closed: false,
-            width: 0,
-            height: 0,
-        });
+        self.surfaces.insert(id, LayerSurfaceState { closed: false, width: 0, height: 0 });
     }
 
-    // opcode 0: set_size(width: uint, height: uint)
     pub fn set_size(&self, id: u32, width: u32, height: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 0)
-            .write_u32(width)
-            .write_u32(height)
-            .build();
+        let h = Handle::<proto::ZwlrLayerSurfaceV1>::new(id);
+        send(&self.conn, &h, &proto::layer_surface_request::SetSize { width, height });
     }
 
-    // opcode 1: set_anchor(anchor: uint)
     pub fn set_anchor(&self, id: u32, anchor: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 1)
-            .write_u32(anchor)
-            .build();
+        let h = Handle::<proto::ZwlrLayerSurfaceV1>::new(id);
+        send(&self.conn, &h, &proto::layer_surface_request::SetAnchor { anchor });
     }
 
-    // opcode 2: set_exclusive_zone(zone: int)
     pub fn set_exclusive_zone(&self, id: u32, zone: i32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 2)
-            .write_i32(zone)
-            .build();
+        let h = Handle::<proto::ZwlrLayerSurfaceV1>::new(id);
+        send(&self.conn, &h, &proto::layer_surface_request::SetExclusiveZone { zone });
     }
 
-    // opcode 3: set_margin(top: int, right: int, bottom: int, left: int)
     pub fn set_margin(&self, id: u32, top: i32, right: i32, bottom: i32, left: i32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 3)
-            .write_i32(top)
-            .write_i32(right)
-            .write_i32(bottom)
-            .write_i32(left)
-            .build();
+        let h = Handle::<proto::ZwlrLayerSurfaceV1>::new(id);
+        send(&self.conn, &h, &proto::layer_surface_request::SetMargin { top, right, bottom, left });
     }
 
-    // opcode 4: set_keyboard_interactivity(interactivity: uint)
     pub fn set_keyboard_interactivity(&self, id: u32, interactivity: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 4)
-            .write_u32(interactivity)
-            .build();
+        let h = Handle::<proto::ZwlrLayerSurfaceV1>::new(id);
+        send(&self.conn, &h, &proto::layer_surface_request::SetKeyboardInteractivity { interactivity });
     }
 
-    // opcode 6: ack_configure(serial: uint)
     pub fn ack_configure(&self, id: u32, serial: u32) {
-        self.conn
-            .borrow_mut()
-            .message_builder(id, 6)
-            .write_u32(serial)
-            .build();
+        let h = Handle::<proto::ZwlrLayerSurfaceV1>::new(id);
+        send(&self.conn, &h, &proto::layer_surface_request::AckConfigure { serial });
     }
 
-    pub fn process(&mut self, ev: &WaylandRawEvent) -> Option<LayerSurfaceEvent> {
-        let state = self.surfaces.get_mut(&ev.sender_id)?;
-        let id = ev.sender_id;
-        let mut fds = vec![];
-        let mut r = MessageReader::new(&ev.body, &mut fds);
-        let event = match ev.opcode {
-            0 => {
-                let serial = r.read_u32().unwrap_or(0);
-                let width = r.read_u32().unwrap_or(0);
-                let height = r.read_u32().unwrap_or(0);
-                state.width = width;
-                state.height = height;
-                LayerSurfaceEvent::Configured { id, serial, width, height }
-            }
-            1 => {
-                state.closed = true;
-                LayerSurfaceEvent::Closed { id }
-            }
-            _ => return None,
+    pub fn process(&mut self, raw: &WaylandRawEvent) -> Option<LayerSurfaceEvent> {
+        let state = self.surfaces.get_mut(&raw.sender_id)?;
+        let id = raw.sender_id;
+        let ev = if let Some(e) = parse::<proto::layer_surface_event::Configure>(raw) {
+            state.width = e.width;
+            state.height = e.height;
+            LayerSurfaceEvent::Configured { id, serial: e.serial, width: e.width, height: e.height }
+        } else if parse::<proto::layer_surface_event::Closed>(raw).is_some() {
+            state.closed = true;
+            LayerSurfaceEvent::Closed { id }
+        } else {
+            return None;
         };
-        println!("[zwlr_layer_surface] {:?}", event);
-        Some(event)
+        println!("[zwlr_layer_surface] {:?}", ev);
+        Some(ev)
     }
 }
 
 #[macro_export]
 macro_rules! register_zwlr_layer_surface {
     () => {
-        app::module::Module::<crate::wayland::ZwlrLayerSurfaceV1>::new()
-            .processor(|ls: &mut crate::wayland::ZwlrLayerSurfaceV1, ev: &crate::wayland::WaylandRawEvent| {
+        app::module::Module::<crate::wayland::ZwlrLayerSurfaceV1>::new().processor(
+            |ls: &mut crate::wayland::ZwlrLayerSurfaceV1, ev: &crate::wayland::WaylandRawEvent| {
                 ls.process(ev)
-            })
+            },
+        )
     };
 }
