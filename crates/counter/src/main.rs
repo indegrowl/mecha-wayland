@@ -11,31 +11,16 @@ use app::{App, Poll, Start, event::Event};
 use io_ring::{Ring, register_ring};
 use layout::layout;
 use timer::{Timer, TimerEvent, TimerSettings, register_timer};
+use utils::{Color, Point, Rect};
 use wayland::{Wayland, register_wayland};
 
 // ARGB8888 little-endian fourcc
 const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
 
 #[derive(Default, Clone, Copy, Debug)]
-struct BoundingBox {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-}
-
-impl BoundingBox {
-    fn contains(&self, px: f64, py: f64) -> bool {
-        let px = px as f32;
-        let py = py as f32;
-        px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
-    }
-}
-
-#[derive(Default, Clone, Copy, Debug)]
 struct HitBoxes {
-    minus: BoundingBox,
-    plus: BoundingBox,
+    minus: Rect,
+    plus: Rect,
 }
 
 struct AppState {
@@ -364,19 +349,20 @@ fn draw_centered_text(
     font: &'static assets::BakedFont,
     texture_id: ::renderer::TextureId,
     text: &str,
-    box_bounds: &BoundingBox,
-    z_index: f32,
+    bb: &Rect,
+    z: f32,
 ) {
     let text_w = font.measure_width(text);
-    let center_x = box_bounds.x + (box_bounds.w - text_w) / 2.0;
-    let center_y = box_bounds.y + font.get_baseline_offset(box_bounds.h);
+    let center_x = bb.x() + (bb.width() - text_w) / 2.0;
+    let center_y = bb.y() + font.get_baseline_offset(bb.height());
 
     renderer.send_command(::renderer::commands::DrawText {
         font,
         texture_id,
         text: text.to_string(),
-        origin: (center_x, center_y, z_index),
-        color: (1.0, 1.0, 1.0, 1.0),
+        origin: Point::new(center_x, center_y),
+        z,
+        color: Color::WHITE,
     });
 }
 
@@ -392,12 +378,8 @@ fn render_counter_ui(
     let mut hit_boxes = HitBoxes::default();
     let count_str = format!("{count}");
 
-    renderer.send_command(ClearColor {
-        r: 0.32,
-        g: 0.32,
-        b: 0.32,
-        a: 1.0,
-    });
+    // Background clear — medium-grey
+    renderer.send_command(ClearColor(Color::rgb(0.32, 0.32, 0.32)));
 
     layout!(
         {
@@ -408,11 +390,11 @@ fn render_counter_ui(
             padding_top: 16.0,
 
             layout!({ height: 50.0 }, {
-                let bb = BoundingBox { x, y, w: width, h: height };
+                let bb = Rect::xywh(x, y, width, height);
                 draw_centered_text(renderer, &atlas::UI_FONT_INTER_24, icon_tex, "Counter", &bb, 0.95);
             }),
             layout!({ height: 120.0 }, {
-                let bb = BoundingBox { x, y, w: width, h: height };
+                let bb = Rect::xywh(x, y, width, height);
                 draw_centered_text(renderer, &atlas::UI_FONT_INTER_100, icon_tex, &count_str, &bb, 0.95);
             }),
             layout!({
@@ -422,47 +404,56 @@ fn render_counter_ui(
                 padding_right: 60.0,
                 justify: space_between,
 
+                // Minus button
                 layout!({ width: 110.0, height: 52.0 }, {
-                    let bb = BoundingBox { x, y, w: width, h: height };
+                    let bb = Rect::xywh(x, y, width, height);
                     renderer.send_command(DrawQuad {
-                        color: (0.2, 0.4, 0.9, 1.0),
-                        border_color: (0.4, 0.6, 1.0, 1.0),
-                        origin: (bb.x, bb.y, 1.0),
-                        size: (bb.w, bb.h),
-                        border_radius: 12.0,
+                        color:            Color::rgb(0.2, 0.4, 0.9),
+                        border_color:     Color::rgb(0.4, 0.6, 1.0),
+                        origin:           Point::new(bb.x(), bb.y()),
+                        z:                1.0,
+                        size:             Size::new(bb.width(), bb.height()),
+                        border_radius:    12.0,
                         border_thickness: 2.0,
                     });
                     draw_centered_text(renderer, &atlas::UI_FONT_INTER_24, icon_tex, "-", &bb, 0.4);
                     hit_boxes.minus = bb;
                 }),
+
+                // Plus button
                 layout!({ width: 110.0, height: 52.0 }, {
-                    let bb = BoundingBox { x, y, w: width, h: height };
+                    let bb = Rect::xywh(x, y, width, height);
                     renderer.send_command(DrawQuad {
-                        color: (0.2, 0.7, 0.3, 1.0),
-                        border_color: (0.4, 0.9, 0.5, 1.0),
-                        origin: (bb.x, bb.y, 1.0),
-                        size: (bb.w, bb.h),
-                        border_radius: 12.0,
+                        color:            Color::rgb(0.2, 0.7, 0.3),
+                        border_color:     Color::rgb(0.4, 0.9, 0.5),
+                        origin:           Point::new(bb.x(), bb.y()),
+                        z:                1.0,
+                        size:             Size::new(bb.width(), bb.height()),
+                        border_radius:    12.0,
                         border_thickness: 2.0,
                     });
                     draw_centered_text(renderer, &atlas::UI_FONT_INTER_24, icon_tex, "+", &bb, 0.5);
                     hit_boxes.plus = bb;
                 }),
             }, {
+                // Button-row background strip
                 renderer.send_command(DrawRect {
-                    color: (0.8, 0.8, 0.8, 1.0),
-                    origin: (x, y, 0.9),
-                    size: (width, height),
+                    color:  Color::rgb(0.8, 0.8, 0.8),
+                    origin: Point::new(x, y),
+                    z:      0.9,
+                    size:   Size::new(width, height),
                 });
             }),
         },
         {
+            // App background card
             renderer.send_command(DrawQuad {
-                color: (0.16, 0.16, 0.18, 1.0),
-                border_color: (0.30, 0.30, 0.35, 1.0),
-                origin: (x, y, 0.0),
-                size: (width, height),
-                border_radius: 20.0,
+                color:            Color::rgb(0.16, 0.16, 0.18),
+                border_color:     Color::rgb(0.30, 0.30, 0.35),
+                origin:           Point::new(x, y),
+                z:                0.0,
+                size:             Size::new(width, height),
+                border_radius:    20.0,
                 border_thickness: 2.0,
             });
         }

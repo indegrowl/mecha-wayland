@@ -89,7 +89,8 @@ impl Timer {
 #[macro_export]
 macro_rules! register_timer {
     () => {
-        app::module::Module::<Timer>::new()
-            .processor(|timer: &mut Timer, event: &io_ring::IoEvent| timer.try_finish(event))
+        app::module::Module::<$crate::Timer>::new().processor(
+            |timer: &mut $crate::Timer, event: &io_ring::IoEvent| timer.try_finish(event),
+        )
     };
 }

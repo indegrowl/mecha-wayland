@@ -226,6 +226,7 @@ dependencies = [
  "timer",
  "tracing",
  "tracing-subscriber",
+ "utils",
  "wayland",
 ]
 
@@ -493,6 +494,15 @@ checksum = "4ae047235e33e2829703574b54fdec96bfbad892062d97fed2f76022287de61b"
 dependencies = [
  "color_quant",
  "weezl",
+]
+
+[[package]]
+name = "glam"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -937,6 +947,7 @@ dependencies = [
  "libc",
  "png 0.18.1",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -1385,6 +1396,14 @@ dependencies = [
  "unicode-script",
  "unicode-vo",
  "xmlwriter",
+]
+
+[[package]]
+name = "utils"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
 ]
 
 [[package]]

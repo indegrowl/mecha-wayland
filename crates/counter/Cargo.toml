@@ -19,6 +19,7 @@ tracing-subscriber = { workspace = true }
 io-uring = { workspace = true }
 libc = { workspace = true }
 layout = { path = "../layout" }
+utils  = { path = "../utils" }
 
 [build-dependencies]
 anyhow = { workspace = true }
