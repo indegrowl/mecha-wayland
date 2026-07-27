@@ -1,8 +1,9 @@
 use crate::state::State;
+use smithay::desktop::{LayerSurface as DesktopLayer, layer_map_for_output};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::shell::wlr_layer::{
-    Layer, LayerSurface, LayerSurfaceConfigure, WlrLayerShellHandler, WlrLayerShellState,
+    Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
 
 impl WlrLayerShellHandler for State {
@@ -13,23 +14,29 @@ impl WlrLayerShellHandler for State {
     fn new_layer_surface(
         &mut self,
         surface: LayerSurface,
-        output: Option<WlOutput>,
-        layer: Layer,
+        wl_output: Option<WlOutput>,
+        _layer: Layer,
         namespace: String,
     ) {
-        println!(
-            "[wlr_layer_shell] New layer surface created! Layer: {:?}, Namespace: '{}'",
-            layer, namespace
-        );
-        let _ = (surface, output);
+        let output = wl_output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .unwrap_or_else(|| self.space.outputs().next().unwrap().clone());
+        let mut map = layer_map_for_output(&output);
+        map.map_layer(&DesktopLayer::new(surface, namespace))
+            .unwrap();
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
-        println!("[wlr_layer_shell] Layer surface destroyed");
-        let _ = surface;
-    }
-
-    fn ack_configure(&mut self, surface: WlSurface, configure: LayerSurfaceConfigure) {
-        let _ = (surface, configure);
+        if let Some((mut map, layer)) = self.space.outputs().find_map(|o| {
+            let map = layer_map_for_output(o);
+            let layer = map
+                .layers()
+                .find(|&l| l.layer_surface() == &surface)
+                .cloned();
+            layer.map(|layer| (map, layer))
+        }) {
+            map.unmap_layer(&layer);
+        }
     }
 }

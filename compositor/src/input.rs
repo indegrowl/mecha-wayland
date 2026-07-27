@@ -3,13 +3,14 @@ use smithay::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
-    desktop::WindowSurfaceType,
+    desktop::{WindowSurfaceType, layer_map_for_output},
     input::{
         keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER},
+    wayland::shell::wlr_layer::Layer,
 };
 
 use crate::state::State;
@@ -19,13 +20,46 @@ impl State {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space
+        let output = self.space.outputs().next()?;
+        let output_geo = self.space.output_geometry(output)?;
+        let layers = layer_map_for_output(output);
+        let pos_in_output = pos - output_geo.loc.to_f64();
+
+        for tier in [Layer::Overlay, Layer::Top] {
+            if let Some(layer) = layers.layer_under(tier, pos_in_output) {
+                let layer_loc = layers.layer_geometry(layer).unwrap().loc;
+                if let Some((s, p)) =
+                    layer.surface_under(pos_in_output - layer_loc.to_f64(), WindowSurfaceType::ALL)
+                {
+                    return Some((s, (p + layer_loc + output_geo.loc).to_f64()));
+                }
+            }
+        }
+
+        if let Some(result) = self
+            .space
             .element_under(pos)
             .and_then(|(window, location)| {
                 window
                     .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                     .map(|(s, p)| (s, (p + location).to_f64()))
             })
+        {
+            return Some(result);
+        }
+
+        for tier in [Layer::Bottom, Layer::Background] {
+            if let Some(layer) = layers.layer_under(tier, pos_in_output) {
+                let layer_loc = layers.layer_geometry(layer).unwrap().loc;
+                if let Some((s, p)) =
+                    layer.surface_under(pos_in_output - layer_loc.to_f64(), WindowSurfaceType::ALL)
+                {
+                    return Some((s, (p + layer_loc + output_geo.loc).to_f64()));
+                }
+            }
+        }
+
+        None
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -90,9 +124,14 @@ impl State {
                             Some(window.toplevel().unwrap().wl_surface().clone()),
                             serial,
                         );
-                        self.space.elements().for_each(|window| {
-                            window.toplevel().unwrap().send_pending_configure();
+                        self.space.elements().for_each(|w| {
+                            w.set_activated(w == &window);
+                            w.toplevel().unwrap().send_pending_configure();
                         });
+                    } else if let Some((surface, _)) =
+                        self.surface_under(pointer.current_location())
+                    {
+                        keyboard.set_focus(self, Some(surface), serial);
                     } else {
                         self.space.elements().for_each(|window| {
                             window.set_activated(false);

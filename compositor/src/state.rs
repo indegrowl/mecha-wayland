@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::Instant;
 
-use smithay::desktop::{Space, Window};
+use smithay::desktop::{PopupManager, Space, Window};
 use smithay::input::{Seat, SeatState};
 use smithay::reexports::calloop::{
     EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic,
@@ -13,6 +13,8 @@ use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::socket::ListeningSocketSource;
 
@@ -26,13 +28,18 @@ pub struct State {
 
     // Smithay State
     pub compositor_state: CompositorState,
+    pub xdg_shell_state: XdgShellState,
+    #[allow(dead_code)]
+    pub xdg_decoration_state: XdgDecorationState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
+    #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
     pub data_device_state: DataDeviceState,
     pub seat_state: SeatState<State>,
+    pub popups: PopupManager,
 
     pub seat: Seat<Self>,
-    pub layer_shell_state: WlrLayerShellState,
 }
 
 impl State {
@@ -41,11 +48,14 @@ impl State {
         let dh = display.handle();
 
         let compositor_state = CompositorState::new::<Self>(&dh);
+        let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let space = Space::default();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let popups = PopupManager::default();
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
@@ -61,12 +71,15 @@ impl State {
             space,
             loop_signal,
             compositor_state,
+            xdg_shell_state,
+            xdg_decoration_state,
+            layer_shell_state,
             shm_state,
             output_manager_state,
             data_device_state,
             seat_state,
+            popups,
             seat,
-            layer_shell_state,
         }
     }
 
