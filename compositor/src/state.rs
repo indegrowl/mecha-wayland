@@ -12,6 +12,7 @@ use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::socket::ListeningSocketSource;
 
@@ -31,6 +32,7 @@ pub struct State {
     pub seat_state: SeatState<State>,
 
     pub seat: Seat<Self>,
+    pub layer_shell_state: WlrLayerShellState,
 }
 
 impl State {
@@ -41,6 +43,7 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let space = Space::default();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
@@ -63,6 +66,7 @@ impl State {
             data_device_state,
             seat_state,
             seat,
+            layer_shell_state,
         }
     }
 
