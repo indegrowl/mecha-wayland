@@ -235,3 +235,55 @@ fn spawn_under_a_removed_parent_panics() {
     app.remove(gone);
     app.spawn(gone, LabelBuilder("orphan"));
 }
+
+// ── traversal ───────────────────────────────────────────────────────────
+
+#[test]
+fn ancestors_walk_up_to_and_including_the_root() {
+    let mut app = App::new();
+    let root = app.root();
+    let a = app.spawn(root, LabelBuilder("a"));
+    let b = app.spawn(a, LabelBuilder("b"));
+    let c = app.spawn(b, LabelBuilder("c"));
+    assert_eq!(
+        app.ancestors(c).collect::<Vec<_>>(),
+        vec![b.id(), a.id(), root]
+    );
+    assert_eq!(app.ancestors(a).collect::<Vec<_>>(), vec![root]);
+    assert_eq!(app.ancestors(root).count(), 0);
+    app.remove(c);
+    assert_eq!(app.ancestors(c).count(), 0, "stale id has no ancestors");
+}
+
+#[test]
+fn descendants_are_pre_order_excluding_self() {
+    // root -> a -> (b -> d, c)
+    let mut app = App::new();
+    let root = app.root();
+    let a = app.spawn(root, LabelBuilder("a"));
+    let b = app.spawn(a, LabelBuilder("b"));
+    let c = app.spawn(a, LabelBuilder("c"));
+    let d = app.spawn(b, LabelBuilder("d"));
+    assert_eq!(
+        app.descendants(root).collect::<Vec<_>>(),
+        vec![a.id(), b.id(), d.id(), c.id()]
+    );
+    assert_eq!(app.descendants(b).collect::<Vec<_>>(), vec![d.id()]);
+    assert_eq!(app.descendants(d).count(), 0);
+}
+
+#[test]
+fn descendants_of_a_removed_subtree_are_gone() {
+    let mut app = App::new();
+    let root = app.root();
+    let pair = app.spawn(root, PairBuilder);
+    let tail = app.spawn(root, LabelBuilder("tail"));
+    assert_eq!(app.descendants(root).count(), 4);
+    app.remove(pair);
+    assert_eq!(app.descendants(root).collect::<Vec<_>>(), vec![tail.id()]);
+    assert_eq!(
+        app.descendants(pair).count(),
+        0,
+        "stale id has no descendants"
+    );
+}

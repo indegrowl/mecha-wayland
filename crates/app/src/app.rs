@@ -143,6 +143,40 @@ impl App {
             .then(|| self.node(id).children.as_slice())
     }
 
+    /// The parent chain from `id` up to and including the root, nearest
+    /// first, excluding `id`. Empty for the root and for a stale id.
+    pub fn ancestors(&self, id: impl Into<NodeId>) -> impl Iterator<Item = NodeId> + '_ {
+        let id = id.into();
+        let mut current = self.slots.is_live(id).then_some(id);
+        std::iter::from_fn(move || {
+            let node = current?;
+            if node == NodeId::ROOT {
+                current = None;
+                return None;
+            }
+            let parent = self.node(node).parent;
+            current = Some(parent);
+            Some(parent)
+        })
+    }
+
+    /// The subtree under `id` in pre-order (a node before its children,
+    /// children in sibling order), excluding `id`. Empty for a leaf and
+    /// for a stale id. Borrows the app, so the tree cannot change while
+    /// the iterator is alive.
+    pub fn descendants(&self, id: impl Into<NodeId>) -> impl Iterator<Item = NodeId> + '_ {
+        let id = id.into();
+        let mut stack: Vec<NodeId> = Vec::new();
+        if self.slots.is_live(id) {
+            stack.extend(self.node(id).children.iter().rev());
+        }
+        std::iter::from_fn(move || {
+            let next = stack.pop()?;
+            stack.extend(self.node(next).children.iter().rev());
+            Some(next)
+        })
+    }
+
     // ── widgets ──────────────────────────────────────────────────────────
 
     /// `None` if `id` is stale, holds a widget of another type, or is the
