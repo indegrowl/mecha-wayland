@@ -1,7 +1,7 @@
-use crate::NodeId;
 use crate::nodes::{Node, Nodes};
 use crate::slots::Slots;
 use crate::widgets::{Root, Widgets};
+use crate::{Build, Handle, NodeId, Widget};
 
 /// The runtime: a tree of nodes, each backed by a widget stored in a
 /// per-type column.
@@ -48,6 +48,45 @@ impl App {
         NodeId::ROOT
     }
 
+    // ── tree: write ──────────────────────────────────────────────────────
+
+    /// Build `builder`'s widget, and whatever subtree its `build` attaches,
+    /// as the last child of `parent`.
+    ///
+    /// The node is linked into the tree before `build` runs, so the handle
+    /// `build` receives is the one returned here and `children(parent)`
+    /// already lists it. Its widget is stored after `build` returns, so
+    /// a lookup of the node's own widget during its build is `None`.
+    ///
+    /// # Panics
+    ///
+    /// If `parent` is not live. Spawning under a dead node is a caller
+    /// bug, not a state to recover from.
+    pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
+        let parent = parent.into();
+        assert!(
+            self.slots.is_live(parent),
+            "spawn under a stale parent: {parent:?}"
+        );
+        let (index, generation) = self.slots.alloc();
+        let len = self.slots.len();
+        let widget_type = self.widgets.column::<B::Widget>(len);
+        self.widgets.grow(len);
+        self.nodes.grow(len);
+
+        let id = NodeId::new(generation, widget_type, index);
+        self.nodes.set(index, Node::new(parent));
+        self.node_mut(parent).children.push(id);
+
+        let handle = Handle::new(id);
+        let widget = B::Widget::build(builder, handle, &mut Spawner { app: self });
+        self.widgets
+            .store_mut::<B::Widget>(widget_type)
+            .expect("column allocated above")
+            .set(index, Some(widget));
+        handle
+    }
+
     // ── tree: read ───────────────────────────────────────────────────────
 
     /// Whether `id` names a node that exists right now.
@@ -81,11 +120,20 @@ impl App {
     }
 }
 
-/// What a [`Widget::build`](crate::Widget::build) gets to touch while it
-/// runs. Methods arrive in the next task.
+/// What a [`Widget::build`] gets to touch while it runs: attaching children
+/// under the node being built. Later slices add handler registration and
+/// component and resource access here.
 pub struct Spawner<'a> {
-    #[allow(dead_code)]
     app: &'a mut App,
+}
+
+impl Spawner<'_> {
+    /// Build `builder` as the last child of `parent`, which is the `me`
+    /// the build was given or a handle returned by an earlier `spawn` in
+    /// the same build. Either way it is live. See [`App::spawn`].
+    pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
+        self.app.spawn(parent, builder)
+    }
 }
 
 #[cfg(test)]
