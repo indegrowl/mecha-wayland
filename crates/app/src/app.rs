@@ -1,10 +1,18 @@
+use std::collections::VecDeque;
+
 use crate::component::{Component, Components};
+use crate::message::{Removed, Spawned};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
 use crate::slots::Slots;
+use crate::system::{System, Systems};
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
-use crate::{Build, Bundle, Handle, NodeId, Widget};
+use crate::{Build, Bundle, Handle, NodeId, Signal, Widget};
+
+/// A queued unit of work: a signal or an event with its dispatch baked
+/// in, so the queue needs no knowledge of the concrete type.
+pub(crate) type Job = Box<dyn FnOnce(&mut App)>;
 
 /// The runtime: a tree of nodes, each backed by a widget stored in a
 /// per-type column.
@@ -13,11 +21,19 @@ use crate::{Build, Bundle, Handle, NodeId, Widget};
 /// `nodes`, `widgets`, and `components` trust the index they are given. The tree is never
 /// empty: [`App::new`] creates the root, which is its own parent and
 /// cannot be removed.
+///
+/// Messages are queued, never run inline: [`App::signal`] and `App::emit`
+/// push jobs, [`App::flush`] runs them.
 pub struct App {
     slots: Slots,
     nodes: Nodes,
     widgets: Widgets,
     components: Components,
+    systems: Systems,
+    /// Events wait here. Drained before every signal.
+    events: VecDeque<Job>,
+    /// Signals wait here. One runs per round of `flush`.
+    signals: VecDeque<Job>,
 }
 
 impl Default for App {
@@ -33,6 +49,9 @@ impl App {
             nodes: Nodes::new(),
             widgets: Widgets::new(),
             components: Components::new(),
+            systems: Systems::new(),
+            events: VecDeque::new(),
+            signals: VecDeque::new(),
         };
         let column = app.widgets.column::<Root>(0);
         let (index, generation) = app.slots.alloc(column);
@@ -119,6 +138,7 @@ impl App {
             .store_mut::<B::Widget>(widget_type)
             .expect("column allocated above")
             .set(index, Some(widget));
+        self.signal(Spawned { id, parent });
         handle
     }
 
@@ -139,6 +159,7 @@ impl App {
         assert!(id != NodeId::ROOT, "the root node cannot be removed");
 
         let parent = self.node(id).parent;
+        self.signal(Removed { id, parent });
         let siblings = &mut self.node_mut(parent).children;
         let position = siblings
             .iter()
@@ -334,6 +355,43 @@ impl App {
         )
     }
 
+    // ── systems and signals ──────────────────────────────────────────────
+
+    /// Run `system` for every `S` that is flushed from now on, after the
+    /// systems registered for `S` before it. Never removed.
+    pub fn system<S: Signal>(&mut self, system: System<S>) -> &mut Self {
+        self.systems.add(system);
+        self
+    }
+
+    /// Queue `signal` for the systems registered for `S`. Nothing runs
+    /// until [`App::flush`]. If no system is registered for `S` right
+    /// now the signal is dropped here, so unlistened traffic costs one
+    /// hash; a system registered between the send and the flush still
+    /// runs, because the job looks the run up when it runs.
+    pub fn signal<S: Signal>(&mut self, signal: S) {
+        if !self.systems.has::<S>() {
+            return;
+        }
+        self.signals
+            .push_back(Box::new(move |app: &mut App| run_signal(app, &signal)));
+    }
+
+    /// Run everything queued: every event, then one signal, then every
+    /// event again, until both queues are empty. Work a job queues runs
+    /// in the same call. A no-op on empty queues.
+    pub fn flush(&mut self) {
+        loop {
+            while let Some(job) = self.events.pop_front() {
+                job(self);
+            }
+            match self.signals.pop_front() {
+                Some(job) => job(self),
+                None => break,
+            }
+        }
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     /// The node record of an id the caller has already validated.
@@ -343,6 +401,16 @@ impl App {
 
     fn node_mut(&mut self, id: NodeId) -> &mut Node {
         self.nodes.get_mut(id.index())
+    }
+}
+
+/// Run `signal` through every system for `S`, by index, so a system
+/// registered during the pass runs in it.
+fn run_signal<S: Signal>(app: &mut App, signal: &S) {
+    let mut i = 0;
+    while let Some(system) = app.systems.get::<S>(i) {
+        system(app, signal);
+        i += 1;
     }
 }
 

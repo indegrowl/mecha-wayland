@@ -117,10 +117,12 @@ mod app;
 mod bundle;
 mod component;
 mod id;
+mod message;
 mod nodes;
 mod query;
 mod slots;
 mod store;
+mod system;
 mod tree;
 mod widgets;
 
@@ -128,13 +130,15 @@ pub use app::{App, Spawner};
 pub use bundle::Bundle;
 pub use component::Component;
 pub use id::{Handle, NodeId};
+pub use message::{Event, PostTick, Removed, Signal, Spawned, Tick};
 pub use query::{Columns, CompMut, Comps, CompsMut, Query};
+pub use system::System;
 pub use tree::Tree;
 pub use widgets::{Build, Widget};
 
 pub mod prelude {
     pub use crate::{
-        App, Build, Bundle, Columns, CompMut, Component, Comps, CompsMut, Handle, NodeId, Query,
-        Spawner, Tree, Widget,
+        App, Build, Bundle, Columns, CompMut, Component, Comps, CompsMut, Event, Handle, NodeId,
+        PostTick, Query, Removed, Signal, Spawned, Spawner, System, Tick, Tree, Widget,
     };
 }
