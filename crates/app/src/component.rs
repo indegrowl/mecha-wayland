@@ -1,8 +1,10 @@
 use std::any::{Any, TypeId, type_name};
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::vec::Drain;
 
 use crate::NodeId;
+use crate::query::CompMut;
 use crate::slots::Slots;
 use crate::store::{AnyStore, Store};
 
@@ -71,6 +73,63 @@ impl<C: Component> Column<C> {
             .iter()
             .enumerate()
             .filter_map(move |(index, value)| Some((slots.id(index as u64)?, value)))
+    }
+
+    /// A write guard for one node. `None` for a stale id.
+    pub fn get_mut<'a>(&'a mut self, slots: &Slots, id: NodeId) -> Option<CompMut<'a, C>> {
+        if !slots.is_live(id) {
+            return None;
+        }
+        let index = id.index();
+        Some(CompMut::new(
+            id,
+            self.values.get_mut(index),
+            self.changed.get_mut(index),
+            &self.list,
+        ))
+    }
+
+    /// Drain the changed list. See [`Changed`].
+    pub fn take_changed<'a>(&'a mut self, slots: &'a Slots) -> Changed<'a> {
+        Changed {
+            slots,
+            bits: &mut self.changed,
+            drain: self.list.get_mut().drain(..),
+        }
+    }
+}
+
+/// Drains a column's changed list in first-write order. For each entry it
+/// clears the slot's bit, then yields the id only if the node is still
+/// live. O(changed). The list keeps its capacity.
+///
+/// Dropping it early finishes the clearing, so "bit set means listed"
+/// holds afterwards.
+pub(crate) struct Changed<'a> {
+    slots: &'a Slots,
+    bits: &'a mut Store<bool>,
+    drain: Drain<'a, NodeId>,
+}
+
+impl Iterator for Changed<'_> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<NodeId> {
+        loop {
+            let id = self.drain.next()?;
+            self.bits.set(id.index(), false);
+            if self.slots.is_live(id) {
+                return Some(id);
+            }
+        }
+    }
+}
+
+impl Drop for Changed<'_> {
+    fn drop(&mut self) {
+        for id in self.drain.by_ref() {
+            self.bits.set(id.index(), false);
+        }
     }
 }
 

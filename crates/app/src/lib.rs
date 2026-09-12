@@ -70,6 +70,7 @@ mod app;
 mod component;
 mod id;
 mod nodes;
+mod query;
 mod slots;
 mod store;
 mod tree;
@@ -78,6 +79,7 @@ mod widgets;
 pub use app::{App, Spawner};
 pub use component::Component;
 pub use id::{Handle, NodeId};
+pub use query::CompMut;
 pub use tree::Tree;
 pub use widgets::{Build, Widget};
 

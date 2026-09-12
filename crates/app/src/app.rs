@@ -1,5 +1,6 @@
 use crate::component::{Component, Components};
 use crate::nodes::{Node, Nodes};
+use crate::query::CompMut;
 use crate::slots::Slots;
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
@@ -237,6 +238,32 @@ impl App {
     /// If `C` is not registered.
     pub fn component<C: Component>(&self, id: impl Into<NodeId>) -> Option<&C> {
         self.components.column::<C>().get(&self.slots, id.into())
+    }
+
+    /// A write guard for one node's `C`. `None` if `id` is stale. The
+    /// guard's first `DerefMut` records the node for [`App::take_changed`].
+    ///
+    /// # Panics
+    ///
+    /// If `C` is not registered.
+    pub fn component_mut<C: Component>(&mut self, id: impl Into<NodeId>) -> Option<CompMut<'_, C>> {
+        let slots = &self.slots;
+        self.components.column_mut::<C>().get_mut(slots, id.into())
+    }
+
+    /// Every node whose `C` was written since the last drain, in
+    /// first-write order, live nodes only. Clears the record as it goes;
+    /// dropping the iterator early still clears. O(changed).
+    ///
+    /// This is the hand-off to the events slice, which will turn each id
+    /// into an `OnChanged<C>` dispatch. Nothing fires here.
+    ///
+    /// # Panics
+    ///
+    /// If `C` is not registered.
+    pub fn take_changed<C: Component>(&mut self) -> impl Iterator<Item = NodeId> + '_ {
+        let slots = &self.slots;
+        self.components.column_mut::<C>().take_changed(slots)
     }
 
     // ── internals ────────────────────────────────────────────────────────
