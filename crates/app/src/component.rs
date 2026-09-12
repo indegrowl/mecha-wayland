@@ -29,10 +29,11 @@ pub trait Component: Default + 'static {}
 /// One component type's data: a value per slot, a changed bit per slot,
 /// and the list of ids written since the last drain.
 ///
-/// Invariant: a set bit means the id is in `list`. A writer sets the bit
-/// before it pushes, so nothing can observe an entry without its bit.
-/// Removing a node clears its bit but leaves its (now stale) id in the
-/// list; the drain skips it.
+/// Invariant: a set bit means the id is in `list`. A writer pushes before
+/// it sets the bit, so a set bit always has its entry; the reverse can
+/// hold briefly and only costs a duplicate entry, which the drain
+/// tolerates. Removing a node clears its bit but leaves its (now stale)
+/// id in the list; the drain skips it.
 pub(crate) struct Column<C: Default> {
     pub(crate) values: Store<C>,
     pub(crate) changed: Store<bool>,
@@ -123,7 +124,8 @@ impl<C: Component> Column<C> {
 /// live. O(changed). The list keeps its capacity.
 ///
 /// Dropping it early finishes the clearing, so "bit set means listed"
-/// holds afterwards.
+/// holds afterwards. Leaking it (`mem::forget`) does not, and leaves
+/// those nodes unable to flag again until their slot is freed.
 pub(crate) struct Changed<'a> {
     slots: &'a Slots,
     bits: &'a mut Store<bool>,

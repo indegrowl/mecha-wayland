@@ -56,13 +56,14 @@ impl<'a, C: Component> CompMut<'a, C> {
         true
     }
 
-    /// Bit first, then the push, so a set bit always has its entry.
+    /// Push first, then the bit, so a set bit always has its entry.
+    /// Nothing between the two can unwind.
     fn flag(&mut self) {
         if !*self.bit {
-            *self.bit = true;
             let mut list = self.list.take();
             list.push(self.id);
             self.list.set(list);
+            *self.bit = true;
         }
     }
 }

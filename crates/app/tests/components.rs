@@ -300,6 +300,13 @@ fn draining_an_unregistered_type_panics() {
     let _ = app.take_changed::<Never>().count();
 }
 
+#[test]
+#[should_panic(expected = "not registered")]
+fn component_mut_of_an_unregistered_type_panics() {
+    let mut app = app();
+    let _ = app.component_mut::<Never>(app.root());
+}
+
 // ── views and queries ───────────────────────────────────────────────────
 
 #[test]
@@ -455,6 +462,36 @@ fn a_six_column_query_resolves_in_any_order() {
 fn querying_an_unregistered_type_panics() {
     let mut app = app();
     let _ = app.components::<(&Pos, &mut Never)>();
+}
+
+#[test]
+fn a_query_with_skipped_columns_fetches_the_right_ones() {
+    let mut app = app();
+    app.register_component::<Tag1>();
+    app.register_component::<Tag2>();
+    app.register_component::<Tag3>();
+    app.register_component::<Tag4>();
+    let a = app.spawn(app.root(), Leaf);
+    {
+        // Columns 0, 3, 5 of a six-column registry: two gaps skipped.
+        let (pos, mut t2, t4) = app.components::<(&Pos, &mut Tag2, &Tag4)>();
+        t2.get_mut(a).unwrap().0 = 2;
+        assert_eq!(pos[a], Pos::default());
+        assert_eq!(t4[a], Tag4(0));
+    }
+    assert_eq!(app.component::<Tag2>(a), Some(&Tag2(2)));
+    assert_eq!(app.take_changed::<Tag2>().collect::<Vec<_>>(), vec![a.id()]);
+}
+
+#[test]
+fn iter_on_a_mutable_view_reads_without_flagging() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let b = app.spawn(app.root(), Leaf);
+    let pos = app.components::<&mut Pos>();
+    let ids: Vec<NodeId> = pos.iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, vec![app.root(), a.id(), b.id()]);
+    assert_eq!(app.take_changed::<Pos>().count(), 0);
 }
 
 // ── split, bundles, and builders ────────────────────────────────────────

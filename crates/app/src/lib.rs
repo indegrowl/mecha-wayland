@@ -19,9 +19,10 @@
 //! # Failure
 //!
 //! Reads return `None` for a stale id or a wrong widget type.
-//! [`App::remove`] returns `false` for a stale id. Only two things panic:
+//! [`App::remove`] returns `false` for a stale id. Two tree calls panic:
 //! spawning under a dead parent and removing the root. Both are caller
 //! bugs, not states to recover from.
+//!
 //! Component calls add four more caller-bug panics: registering a type
 //! twice, using a type that was never registered, indexing a view with a
 //! stale id, and a query that names one type twice with a `&mut`.

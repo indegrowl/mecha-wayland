@@ -57,6 +57,10 @@ impl App {
     // ── tree: write ──────────────────────────────────────────────────────
 
     /// [`App::spawn_with`] with no initial component values.
+    ///
+    /// # Panics
+    ///
+    /// If `parent` is not live. See [`App::spawn_with`].
     pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
         self.spawn_with(parent, builder, ())
     }
@@ -286,8 +290,19 @@ impl App {
     /// [`Comps`](crate::Comps), `&mut C` for a
     /// [`CompsMut`](crate::CompsMut), or a tuple of up to six of those.
     ///
-    /// ```ignore
+    /// ```
+    /// # use app::prelude::*;
+    /// # #[derive(Default)]
+    /// # struct Style;
+    /// # impl Component for Style {}
+    /// # #[derive(Default)]
+    /// # struct Rect;
+    /// # impl Component for Rect {}
+    /// # let mut app = App::new();
+    /// # app.register_component::<Style>();
+    /// # app.register_component::<Rect>();
     /// let (style, mut rect) = app.components::<(&Style, &mut Rect)>();
+    /// # let _ = (&style, &mut rect);
     /// ```
     ///
     /// Takes `&mut self` even for a read-only query, since one signature
@@ -325,10 +340,10 @@ impl App {
 }
 
 /// What a [`Widget::build`] gets to touch while it runs: attaching children
-/// under the node being built, and the components of `me` and of the
-/// nodes it spawned. Deliberately narrow: no whole-column views, no
-/// drain, no split. Later slices add handler registration and resource
-/// access here.
+/// under the node being built, and single-node component access, meant
+/// for `me` and the nodes it spawned. Deliberately narrow: no
+/// whole-column views, no drain, no split. Later slices add handler
+/// registration and resource access here.
 pub struct Spawner<'a> {
     app: &'a mut App,
 }
