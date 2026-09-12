@@ -10,7 +10,7 @@ use crate::slots::Slots;
 use crate::system::{System, Systems};
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
-use crate::{Build, Bundle, Event, Handle, NodeId, Signal, Widget};
+use crate::{Build, Bundle, Event, Handle, Module, NodeId, Signal, Widget};
 
 /// A queued unit of work: a signal or an event with its dispatch baked
 /// in, so the queue needs no knowledge of the concrete type.
@@ -282,8 +282,9 @@ impl App {
     /// # Panics
     ///
     /// If `C` is already registered.
-    pub fn register_component<C: Component>(&mut self) {
+    pub fn register_component<C: Component>(&mut self) -> &mut Self {
         self.components.register::<C>(self.slots.len());
+        self
     }
 
     /// One node's `C`. `None` if `id` is stale.
@@ -444,6 +445,14 @@ impl App {
     pub fn run(self) {
         let runner = self.runner.unwrap_or(default_runner);
         runner(self)
+    }
+
+    // ── modules ──────────────────────────────────────────────────────────
+
+    /// Install `module` now. See [`Module`].
+    pub fn add_module(&mut self, module: impl Module) -> &mut Self {
+        module.install(self);
+        self
     }
 
     // ── internals ────────────────────────────────────────────────────────
