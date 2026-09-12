@@ -71,12 +71,14 @@ mod id;
 mod nodes;
 mod slots;
 mod store;
+mod tree;
 mod widgets;
 
 pub use app::{App, Spawner};
 pub use id::{Handle, NodeId};
+pub use tree::Tree;
 pub use widgets::{Build, Widget};
 
 pub mod prelude {
-    pub use crate::{App, Build, Handle, NodeId, Spawner, Widget};
+    pub use crate::{App, Build, Handle, NodeId, Spawner, Tree, Widget};
 }

@@ -1,5 +1,6 @@
 use crate::nodes::{Node, Nodes};
 use crate::slots::Slots;
+use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
 use crate::{Build, Handle, NodeId, Widget};
 
@@ -128,40 +129,32 @@ impl App {
 
     // ── tree: read ───────────────────────────────────────────────────────
 
+    /// The tree as a read-only view. Every read below is this view's
+    /// method; take the view itself to hold the tree across calls or to
+    /// pair it with a column view through [`App::split`].
+    pub fn tree(&self) -> Tree<'_> {
+        Tree::new(&self.slots, &self.nodes)
+    }
+
     /// Whether `id` names a node that exists right now.
     pub fn is_live(&self, id: impl Into<NodeId>) -> bool {
-        self.slots.is_live(id.into())
+        self.tree().is_live(id)
     }
 
     /// `None` if `id` is stale. The root's parent is the root.
     pub fn parent(&self, id: impl Into<NodeId>) -> Option<NodeId> {
-        let id = id.into();
-        self.slots.is_live(id).then(|| self.node(id).parent)
+        self.tree().parent(id)
     }
 
     /// In sibling order. `None` if `id` is stale.
     pub fn children(&self, id: impl Into<NodeId>) -> Option<&[NodeId]> {
-        let id = id.into();
-        self.slots
-            .is_live(id)
-            .then(|| self.node(id).children.as_slice())
+        self.tree().children(id)
     }
 
     /// The parent chain from `id` up to and including the root, nearest
     /// first, excluding `id`. Empty for the root and for a stale id.
     pub fn ancestors(&self, id: impl Into<NodeId>) -> impl Iterator<Item = NodeId> + '_ {
-        let id = id.into();
-        let mut current = self.slots.is_live(id).then_some(id);
-        std::iter::from_fn(move || {
-            let node = current?;
-            if node == NodeId::ROOT {
-                current = None;
-                return None;
-            }
-            let parent = self.node(node).parent;
-            current = Some(parent);
-            Some(parent)
-        })
+        self.tree().ancestors(id)
     }
 
     /// The subtree under `id` in pre-order (a node before its children,
@@ -169,16 +162,7 @@ impl App {
     /// for a stale id. Borrows the app, so the tree cannot change while
     /// the iterator is alive.
     pub fn descendants(&self, id: impl Into<NodeId>) -> impl Iterator<Item = NodeId> + '_ {
-        let id = id.into();
-        let mut stack: Vec<NodeId> = Vec::new();
-        if self.slots.is_live(id) {
-            stack.extend(self.node(id).children.iter().rev());
-        }
-        std::iter::from_fn(move || {
-            let next = stack.pop()?;
-            stack.extend(self.node(next).children.iter().rev());
-            Some(next)
-        })
+        self.tree().descendants(id)
     }
 
     // ── widgets ──────────────────────────────────────────────────────────

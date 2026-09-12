@@ -368,3 +368,33 @@ fn descendants_of_a_removed_subtree_are_gone() {
         "stale id has no descendants"
     );
 }
+
+#[test]
+fn tree_view_reads_match_the_app_reads_and_outlive_the_call() {
+    let mut app = App::new();
+    let pair = app.spawn(app.root(), PairBuilder);
+    let (left, right) = {
+        let p = app.widget::<Pair>(pair).unwrap();
+        (p.left, p.right)
+    };
+
+    let tree = app.tree();
+    assert_eq!(tree.root(), app.root());
+    assert!(tree.is_live(left));
+    assert_eq!(tree.parent(left), Some(pair.id()));
+    assert_eq!(tree.children(pair), Some(&[left.id(), right.id()][..]));
+    assert_eq!(
+        tree.ancestors(left).collect::<Vec<_>>(),
+        vec![pair.id(), app.root()]
+    );
+    assert_eq!(
+        tree.descendants(app.root()).collect::<Vec<_>>(),
+        vec![pair.id(), left.id(), right.id()]
+    );
+
+    // The view is `Copy`, and a slice it hands out lives as long as the
+    // view's borrow, not the method call.
+    let children = tree.children(pair).unwrap();
+    let copy = tree;
+    assert_eq!(copy.children(pair), Some(children));
+}
