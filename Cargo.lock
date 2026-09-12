@@ -12,6 +12,9 @@ dependencies = [
 [[package]]
 name = "mecha-wayland"
 version = "0.1.0"
+dependencies = [
+ "app",
+]
 
 [[package]]
 name = "smallvec"
