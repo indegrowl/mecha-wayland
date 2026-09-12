@@ -18,14 +18,10 @@ pub struct Targets(SmallVec<[NodeId; 4]>);
 
 /// One stored handler: the user's closure wrapped so it takes the app,
 /// the target the event landed on, and the event. See `Spawner::on`.
-// Not read outside `handler::tests` until `Spawner::on` (Task 4) stores one.
-#[allow(dead_code)]
 pub(crate) type Handler<E> = Box<dyn FnMut(&mut App, NodeId, &E)>;
 
 /// One node's handlers for one event type, in registration order. Two
 /// inline before the first heap allocation. What a vacant slot holds.
-// Not constructed outside `handler::tests` until `Spawner::on` (Task 4).
-#[allow(dead_code)]
 pub(crate) struct Handlers<E: Event>(pub(crate) SmallVec<[Handler<E>; 2]>);
 
 /// Every handler column: one `Store<Handlers<E>>` per event type,
@@ -87,8 +83,6 @@ impl HandlerColumns {
     }
 
     /// The column for `E`, allocated on first sight and grown to `len`.
-    // Not called outside `handler::tests` until `Spawner::on` (Task 4).
-    #[allow(dead_code)]
     pub fn column_mut<E: Event>(&mut self, len: u64) -> &mut Store<Handlers<E>> {
         self.columns
             .entry(TypeId::of::<E>())
@@ -103,8 +97,6 @@ impl HandlerColumns {
     }
 
     /// The column for `E` if any `on::<E>` ever ran.
-    // Not called outside `handler::tests` until dispatch (Task 4) reads it.
-    #[allow(dead_code)]
     pub fn column_of<E: Event>(&mut self) -> Option<&mut Store<Handlers<E>>> {
         self.columns
             .get_mut(&TypeId::of::<E>())?
@@ -124,6 +116,62 @@ impl HandlerColumns {
         for column in self.columns.values_mut() {
             column.free(index);
         }
+    }
+}
+
+/// Run every handler for `(target, E)`, for each target in order. A
+/// stale target is skipped. Nothing at all happens if no `on::<E>` ever
+/// ran.
+pub(crate) fn dispatch<E: Event>(app: &mut App, event: &E, targets: &[NodeId]) {
+    for &target in targets {
+        if !app.is_live(target) {
+            continue;
+        }
+        let taken = match app.handlers.column_of::<E>() {
+            Some(column) => column.take(target.index()),
+            None => return,
+        };
+        if taken.0.is_empty() {
+            continue;
+        }
+        let mut restore = Restore {
+            app: &mut *app,
+            target,
+            handlers: taken,
+        };
+        let Restore { app, handlers, .. } = &mut restore;
+        for handler in handlers.0.iter_mut() {
+            handler(app, target, event);
+        }
+    }
+}
+
+/// Holds a node's handler list while its handlers run and puts it back on
+/// drop, unwinding included. The put-back merges handlers attached to the
+/// same slot during the call after the taken ones, and does nothing if
+/// the target is no longer live: removed, or removed and its slot reused
+/// by a node that must not inherit the list.
+struct Restore<'a, E: Event> {
+    app: &'a mut App,
+    target: NodeId,
+    handlers: Handlers<E>,
+}
+
+impl<E: Event> Drop for Restore<'_, E> {
+    fn drop(&mut self) {
+        if !self.app.is_live(self.target) {
+            return;
+        }
+        let column = self
+            .app
+            .handlers
+            .column_of::<E>()
+            .expect("the column the list was taken from");
+        let slot = column.get_mut(self.target.index());
+        let added = std::mem::take(slot);
+        let mut list = std::mem::take(&mut self.handlers);
+        list.0.extend(added.0);
+        *slot = list;
     }
 }
 

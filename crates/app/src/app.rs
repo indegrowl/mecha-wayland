@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 
 use crate::component::{Component, Components};
-use crate::handler::HandlerColumns;
+use crate::context::Context;
+use crate::handler::{Handler, HandlerColumns, Targets, dispatch};
 use crate::message::{Removed, Spawned};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
@@ -9,7 +10,7 @@ use crate::slots::Slots;
 use crate::system::{System, Systems};
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
-use crate::{Build, Bundle, Handle, NodeId, Signal, Widget};
+use crate::{Build, Bundle, Event, Handle, NodeId, Signal, Widget};
 
 /// A queued unit of work: a signal or an event with its dispatch baked
 /// in, so the queue needs no knowledge of the concrete type.
@@ -31,7 +32,7 @@ pub struct App {
     widgets: Widgets,
     components: Components,
     systems: Systems,
-    handlers: HandlerColumns,
+    pub(crate) handlers: HandlerColumns,
     /// Events wait here. Drained before every signal.
     events: VecDeque<Job>,
     /// Signals wait here. One runs per round of `flush`.
@@ -382,6 +383,19 @@ impl App {
             .push_back(Box::new(move |app: &mut App| run_signal(app, &signal)));
     }
 
+    // ── events ───────────────────────────────────────────────────────────
+
+    /// Queue `event` for the handlers of every node in `targets`, in that
+    /// order. Nothing runs until [`App::flush`]. A target that is stale
+    /// by then is skipped; a node with no handler for `E` costs one
+    /// liveness check.
+    pub fn emit<E: Event>(&mut self, event: E, targets: impl Into<Targets>) {
+        let targets = targets.into();
+        self.events.push_back(Box::new(move |app: &mut App| {
+            run_event(app, event, targets)
+        }));
+    }
+
     /// Run everything queued: every event, then one signal, then every
     /// event again, until both queues are empty. Work a job queues runs
     /// in the same call. A no-op on empty queues.
@@ -419,6 +433,11 @@ fn run_signal<S: Signal>(app: &mut App, signal: &S) {
     }
 }
 
+/// Run one queued emit: the handlers of every target.
+fn run_event<E: Event>(app: &mut App, event: E, targets: Targets) {
+    dispatch(app, &event, &targets);
+}
+
 /// What a [`Widget::build`] gets to touch while it runs: the node being
 /// built, attaching children under it, single-node component access
 /// meant for `me` and the nodes it spawned, and attaching handlers on
@@ -441,6 +460,44 @@ impl<W: Widget> Spawner<'_, W> {
     /// the same build. Either way it is live. See [`App::spawn`].
     pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
         self.app.spawn(parent, builder)
+    }
+
+    /// Run `handler` whenever an `E` lands on `target`, on behalf of the
+    /// node being built: the handler's [`Context::me`] is this node and
+    /// its [`Context::target`] is `target`. `target` is usually `me`, or a
+    /// child spawned earlier in the same build. Handlers for one
+    /// `(target, E)` run in registration order; they go away with the
+    /// target, and are skipped once this node is gone.
+    ///
+    /// # Panics
+    ///
+    /// If `target` is stale.
+    pub fn on<E: Event>(
+        &mut self,
+        target: impl Into<NodeId>,
+        mut handler: impl FnMut(&mut Context<'_, W>, &E) + 'static,
+    ) -> &mut Self {
+        let target = target.into();
+        assert!(
+            self.app.is_live(target),
+            "handler on a stale target: {target:?}"
+        );
+        let owner = self.me;
+        let erased: Handler<E> = Box::new(move |app: &mut App, target: NodeId, event: &E| {
+            if !app.is_live(owner) {
+                return;
+            }
+            let mut ctx = Context::new(app, owner, target);
+            handler(&mut ctx, event);
+        });
+        let len = self.app.slots.len();
+        self.app
+            .handlers
+            .column_mut::<E>(len)
+            .get_mut(target.index())
+            .0
+            .push(erased);
+        self
     }
 
     /// [`Spawner::spawn`] with initial component values. See

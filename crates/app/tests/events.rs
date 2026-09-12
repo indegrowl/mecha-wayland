@@ -53,6 +53,58 @@ impl Signal for Ping {}
 struct Pong;
 impl Signal for Pong {}
 
+struct Inc;
+impl Event for Inc {}
+
+struct Add(u32);
+impl Event for Add {}
+
+struct Step;
+impl Event for Step {}
+
+/// Counts `Inc` and `Add` events on itself.
+struct Counter(u32);
+struct CounterBuilder;
+impl Build for CounterBuilder {
+    type Widget = Counter;
+}
+impl Widget for Counter {
+    type Builder = CounterBuilder;
+    fn build(_b: CounterBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        s.on::<Inc>(me, |ctx, _| ctx.me().0 += 1);
+        s.on::<Add>(me, |ctx, e| ctx.me().0 += e.0);
+        Counter(0)
+    }
+}
+
+/// Logs `tag` whenever `Inc` lands on `target`, on its own behalf: the
+/// handler's owner is the watcher, its target is someone else.
+struct Watcher;
+struct WatcherBuilder {
+    target: NodeId,
+    tag: &'static str,
+}
+impl Build for WatcherBuilder {
+    type Widget = Watcher;
+}
+impl Widget for Watcher {
+    type Builder = WatcherBuilder;
+    fn build(b: WatcherBuilder, _me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        let tag = b.tag;
+        s.on::<Inc>(b.target, move |ctx, _| {
+            log(format!(
+                "{tag} target_is_me={}",
+                ctx.target() == ctx.handle().id()
+            ))
+        });
+        Watcher
+    }
+}
+
+fn count(app: &App, h: Handle<Counter>) -> u32 {
+    app.widget::<Counter>(h).unwrap().0
+}
+
 // ── systems ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -187,4 +239,330 @@ fn flush_on_empty_queues_is_a_noop() {
     let mut app = App::new();
     app.flush();
     app.flush();
+}
+
+// ── events and handlers ─────────────────────────────────────────────────
+
+#[test]
+fn emit_reaches_only_the_named_nodes_in_order() {
+    let mut app = App::new();
+    let a = app.spawn(app.root(), CounterBuilder);
+    let b = app.spawn(app.root(), CounterBuilder);
+    let c = app.spawn(a, CounterBuilder);
+    app.spawn(
+        app.root(),
+        WatcherBuilder {
+            target: c.id(),
+            tag: "c",
+        },
+    );
+    app.spawn(
+        app.root(),
+        WatcherBuilder {
+            target: a.id(),
+            tag: "a",
+        },
+    );
+
+    app.emit(Inc, [c.id(), a.id()]);
+    assert_eq!(count(&app, a), 0, "queued, not run");
+    app.flush();
+    assert_eq!((count(&app, a), count(&app, b), count(&app, c)), (1, 0, 1));
+    assert_eq!(take_log(), ["c target_is_me=false", "a target_is_me=false"]);
+}
+
+#[test]
+fn emit_to_the_same_node_twice_runs_its_handlers_twice() {
+    let mut app = App::new();
+    let a = app.spawn(app.root(), CounterBuilder);
+    app.emit(Inc, [a.id(), a.id()]);
+    app.emit(Add(5), a);
+    app.flush();
+    assert_eq!(count(&app, a), 7);
+}
+
+#[test]
+fn unhandled_root_stale_and_removed_since_emit_targets_are_skipped() {
+    let mut app = App::new();
+    let a = app.spawn(app.root(), CounterBuilder);
+    let leaf = app.spawn(app.root(), Leaf);
+    let gone = app.spawn(app.root(), CounterBuilder);
+    app.remove(gone);
+    let late = app.spawn(app.root(), CounterBuilder);
+
+    app.emit(Inc, [leaf.id(), app.root(), gone.id(), late.id(), a.id()]);
+    app.remove(late);
+    app.flush();
+    assert_eq!(count(&app, a), 1);
+}
+
+#[test]
+fn handlers_for_one_node_and_event_run_in_registration_order() {
+    struct Order;
+    struct OrderBuilder;
+    impl Build for OrderBuilder {
+        type Widget = Order;
+    }
+    impl Widget for Order {
+        type Builder = OrderBuilder;
+        fn build(_b: OrderBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Step>(me, |_, _| log("1"))
+                .on::<Step>(me, |_, _| log("2"))
+                .on::<Step>(me, |_, _| log("3"));
+            Order
+        }
+    }
+    let mut app = App::new();
+    let o = app.spawn(app.root(), OrderBuilder);
+    app.emit(Step, o);
+    app.flush();
+    assert_eq!(take_log(), ["1", "2", "3"]);
+}
+
+#[test]
+#[should_panic(expected = "stale target")]
+fn on_with_a_stale_target_panics() {
+    let mut app = App::new();
+    let gone = app.spawn(app.root(), CounterBuilder);
+    app.remove(gone);
+    app.spawn(
+        app.root(),
+        WatcherBuilder {
+            target: gone.id(),
+            tag: "never",
+        },
+    );
+}
+
+#[test]
+fn a_parent_can_handle_events_on_its_child_with_itself_as_me() {
+    struct Row(u32);
+    struct RowBuilder;
+    impl Build for RowBuilder {
+        type Widget = Row;
+    }
+    impl Widget for Row {
+        type Builder = RowBuilder;
+        fn build(_b: RowBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            let child = s.spawn(me, CounterBuilder);
+            s.on::<Inc>(child, |ctx, _| {
+                ctx.me().0 += 10;
+                let target = ctx.target();
+                let child_count = ctx.widget::<Counter>(target).unwrap().0;
+                log(format!("row sees child at {child_count}"));
+            });
+            Row(0)
+        }
+    }
+    let mut app = App::new();
+    let row = app.spawn(app.root(), RowBuilder);
+    let child = app.children(row).unwrap()[0];
+    app.emit(Inc, child);
+    app.flush();
+    assert_eq!(app.widget::<Row>(row).unwrap().0, 10);
+    // The child's own handler ran first: it was registered first.
+    assert_eq!(take_log(), ["row sees child at 1"]);
+}
+
+#[test]
+fn a_handler_whose_owner_was_removed_does_not_run() {
+    let mut app = App::new();
+    let c = app.spawn(app.root(), CounterBuilder);
+    let w = app.spawn(
+        app.root(),
+        WatcherBuilder {
+            target: c.id(),
+            tag: "w",
+        },
+    );
+    app.remove(w);
+    app.emit(Inc, c);
+    app.flush();
+    assert_eq!(count(&app, c), 1, "the counter's own handler still runs");
+    assert!(take_log().is_empty(), "the watcher's does not");
+}
+
+#[test]
+fn at_reaches_another_node_and_is_none_for_a_stale_handle() {
+    struct Reader;
+    struct Look(Handle<Counter>, Handle<Counter>);
+    impl Event for Look {}
+    struct ReaderBuilder;
+    impl Build for ReaderBuilder {
+        type Widget = Reader;
+    }
+    impl Widget for Reader {
+        type Builder = ReaderBuilder;
+        fn build(_b: ReaderBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Look>(me, |ctx, e| {
+                let seen = ctx.at(e.0).map(|mut other| {
+                    other.me().0 = 99;
+                    other.handle() == e.0 && other.target() == e.0.id()
+                });
+                let stale = ctx.at(e.1).is_none();
+                log(format!("seen={seen:?} stale={stale}"));
+            });
+            Reader
+        }
+    }
+    let mut app = App::new();
+    let live = app.spawn(app.root(), CounterBuilder);
+    let gone = app.spawn(app.root(), CounterBuilder);
+    app.remove(gone);
+    let r = app.spawn(app.root(), ReaderBuilder);
+    app.emit(Look(live, gone), r);
+    app.flush();
+    assert_eq!(take_log(), ["seen=Some(true) stale=true"]);
+    assert_eq!(count(&app, live), 99);
+}
+
+#[test]
+fn a_handler_can_read_and_write_its_owners_components() {
+    #[derive(Default, Debug, PartialEq)]
+    struct Hits(u32);
+    impl Component for Hits {}
+
+    struct Tally;
+    struct TallyBuilder;
+    impl Build for TallyBuilder {
+        type Widget = Tally;
+    }
+    impl Widget for Tally {
+        type Builder = TallyBuilder;
+        fn build(_b: TallyBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Step>(me, |ctx, _| {
+                let before = ctx.component::<Hits>().unwrap().0;
+                ctx.component_mut::<Hits>().unwrap().0 = before + 1;
+            });
+            Tally
+        }
+    }
+    let mut app = App::new();
+    app.register_component::<Hits>();
+    let t = app.spawn(app.root(), TallyBuilder);
+    app.emit(Step, [t.id(), t.id()]);
+    app.flush();
+    assert_eq!(app.component::<Hits>(t), Some(&Hits(2)));
+    assert_eq!(app.take_changed::<Hits>().collect::<Vec<_>>(), [t.id()]);
+}
+
+#[test]
+fn a_handler_adding_a_handler_to_its_target_keeps_both_in_order() {
+    struct Adder;
+    struct AdderBuilder;
+    impl Build for AdderBuilder {
+        type Widget = Adder;
+    }
+    impl Widget for Adder {
+        type Builder = AdderBuilder;
+        fn build(_b: AdderBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Inc>(me, |ctx, _| {
+                log("adder");
+                let target = ctx.target();
+                let root = ctx.root();
+                ctx.spawn(
+                    root,
+                    WatcherBuilder {
+                        target,
+                        tag: "added",
+                    },
+                );
+            });
+            Adder
+        }
+    }
+    let mut app = App::new();
+    let a = app.spawn(app.root(), AdderBuilder);
+    app.emit(Inc, a);
+    app.flush();
+    assert_eq!(
+        take_log(),
+        ["adder"],
+        "a handler added mid-call waits for the next emit"
+    );
+    app.emit(Inc, a);
+    app.flush();
+    assert_eq!(take_log(), ["adder", "added target_is_me=false"]);
+}
+
+#[test]
+fn a_reused_slot_inherits_no_handlers_from_the_node_a_handler_removed() {
+    // The parent owns the handler and stays live, so if the child's list
+    // were wrongly put back onto the reused slot, the handler would run
+    // again for the new node.
+    struct Reaper;
+    struct ReaperBuilder;
+    impl Build for ReaperBuilder {
+        type Widget = Reaper;
+    }
+    impl Widget for Reaper {
+        type Builder = ReaperBuilder;
+        fn build(_b: ReaperBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            let child = s.spawn(me, Leaf);
+            s.on::<Inc>(child, |ctx, _| {
+                log("reap");
+                let target = ctx.target();
+                let root = ctx.root();
+                ctx.remove(target);
+                ctx.spawn(root, Leaf);
+            });
+            Reaper
+        }
+    }
+    let mut app = App::new();
+    let reaper = app.spawn(app.root(), ReaperBuilder);
+    let child = app.children(reaper).unwrap()[0];
+    app.emit(Inc, child);
+    app.flush();
+    assert_eq!(take_log(), ["reap"]);
+    assert!(!app.is_live(child));
+    let reused = *app.children(app.root()).unwrap().last().unwrap();
+    assert_ne!(reused, child);
+    app.emit(Inc, reused);
+    app.flush();
+    assert!(take_log().is_empty(), "the new node has no handlers");
+}
+
+#[test]
+fn a_panicking_handler_leaves_the_widget_and_the_other_handlers_in_place() {
+    struct Fuse(u32);
+    struct Blow;
+    impl Event for Blow {}
+    struct FuseBuilder;
+    impl Build for FuseBuilder {
+        type Widget = Fuse;
+    }
+    impl Widget for Fuse {
+        type Builder = FuseBuilder;
+        fn build(_b: FuseBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Blow>(me, |ctx, _| {
+                ctx.me().0 += 1;
+                if ctx.me().0 == 1 {
+                    panic!("blown");
+                }
+            })
+            .on::<Blow>(me, |_, _| log("second"));
+            Fuse(0)
+        }
+    }
+
+    let mut app = App::new();
+    let f = app.spawn(app.root(), FuseBuilder);
+    app.emit(Blow, f);
+
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.flush()));
+    std::panic::set_hook(hook);
+    assert!(result.is_err(), "the panic propagates out of flush");
+
+    assert_eq!(
+        app.widget::<Fuse>(f).unwrap().0,
+        1,
+        "the write before the panic stuck"
+    );
+    app.emit(Blow, f);
+    app.flush();
+    assert_eq!(app.widget::<Fuse>(f).unwrap().0, 2);
+    assert_eq!(take_log(), ["second"], "both handlers survived the unwind");
 }
