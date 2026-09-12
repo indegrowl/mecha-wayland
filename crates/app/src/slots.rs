@@ -6,6 +6,10 @@ use crate::NodeId;
 struct Slot {
     /// Bumped every time the slot is freed. An id is live only if its
     /// generation matches the slot's *and* the slot is live.
+    ///
+    /// Wraps on overflow (`wrapping_add`): a stale id from 2^32 frees of
+    /// this slot ago would then read as live again. Accepted deliberately;
+    /// that many frees of one slot is not a case worth guarding against.
     generation: u32,
     is_live: bool,
 }

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! The UI runtime: a tree of nodes, each backed by a widget.
 //!
 //! # Model

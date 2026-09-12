@@ -33,6 +33,26 @@ impl Widget for Pair {
     }
 }
 
+/// Builds a chain within its own build: a `list` child, two labels under
+/// it, and a further child under the second of those labels — spawning
+/// under handles ("me", then "list", then "b") returned earlier in the
+/// same build.
+struct Chain;
+struct ChainBuilder;
+impl Build for ChainBuilder {
+    type Widget = Chain;
+}
+impl Widget for Chain {
+    type Builder = ChainBuilder;
+    fn build(_b: ChainBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+        let list = s.spawn(me, LabelBuilder("list"));
+        s.spawn(list, LabelBuilder("item-a"));
+        let b = s.spawn(list, LabelBuilder("item-b"));
+        s.spawn(b, LabelBuilder("grandchild"));
+        Chain
+    }
+}
+
 /// Never spawned by any test.
 struct Ghost;
 impl Build for Ghost {
@@ -84,6 +104,25 @@ fn nested_build_attaches_grandchildren_under_the_right_parent() {
     assert_eq!(kids.len(), 2);
     assert_eq!(app.parent(kids[0]), Some(pair.id()));
     assert_eq!(app.parent(kids[1]), Some(pair.id()));
+}
+
+#[test]
+fn a_build_can_spawn_under_a_handle_it_created_earlier_in_the_same_build() {
+    let mut app = App::new();
+    let chain = app.spawn(app.root(), ChainBuilder);
+    let list = app.children(chain).unwrap().to_vec();
+    assert_eq!(list.len(), 1, "one child spawned under `me`");
+    let list = list[0];
+    assert_eq!(app.parent(list), Some(chain.id()));
+
+    let list_kids = app.children(list).unwrap().to_vec();
+    assert_eq!(list_kids.len(), 2, "two labels spawned under `list`");
+    let b = list_kids[1];
+    assert_eq!(app.parent(b), Some(list));
+
+    let b_kids = app.children(b).unwrap().to_vec();
+    assert_eq!(b_kids.len(), 1, "one child spawned under `b`");
+    assert_eq!(app.parent(b_kids[0]), Some(b));
 }
 
 #[test]
@@ -163,6 +202,26 @@ fn widgets_by_type_lists_every_live_one_in_spawn_order() {
     assert_eq!(app.widgets::<Ghost>().count(), 0, "never spawned");
 }
 
+#[test]
+fn a_slot_reused_by_another_widget_type_does_not_resurrect_the_old_widget() {
+    let mut app = App::new();
+    let root = app.root();
+    let label = app.spawn(root, LabelBuilder("gone"));
+    assert!(app.remove(label));
+
+    // One freed slot in the FIFO, so this spawn — of a different widget
+    // type — reuses it (see the unit test confirming FIFO reuse in
+    // `slots.rs`).
+    let _pair = app.spawn(root, PairBuilder);
+
+    assert!(!app.is_live(label));
+    assert!(app.widget::<Label>(label).is_none());
+    assert!(
+        app.widgets::<Label>().all(|(id, _)| id != label.id()),
+        "the reused slot must not be listed as a live Label"
+    );
+}
+
 // ── remove ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -218,6 +277,28 @@ fn removing_a_leaf_keeps_its_siblings() {
     assert_eq!(app.children(root), Some(&[a.id(), c.id()][..]));
     assert!(app.widget::<Label>(a).is_some());
     assert!(app.widget::<Label>(c).is_some());
+}
+
+#[test]
+fn removing_a_subtree_stales_every_descendant_three_levels_deep() {
+    let mut app = App::new();
+    let root = app.root();
+    let top = app.spawn(root, LabelBuilder("top"));
+    let mid = app.spawn(top, LabelBuilder("mid"));
+    let leaf = app.spawn(mid, LabelBuilder("leaf"));
+    let grandleaf = app.spawn(leaf, LabelBuilder("grandleaf"));
+
+    assert!(app.remove(top));
+
+    for id in [top.id(), mid.id(), leaf.id(), grandleaf.id()] {
+        assert!(!app.is_live(id), "every id in the removed subtree is stale");
+        assert!(app.widget::<Label>(id).is_none());
+    }
+    assert_eq!(
+        app.children(root),
+        Some(&[][..]),
+        "top is gone from root's children"
+    );
 }
 
 #[test]

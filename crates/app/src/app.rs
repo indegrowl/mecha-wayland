@@ -80,6 +80,7 @@ impl App {
 
         let handle = Handle::new(id);
         let widget = B::Widget::build(builder, handle, &mut Spawner { app: self });
+        debug_assert!(self.slots.is_live(id), "build removed its own node");
         self.widgets
             .store_mut::<B::Widget>(widget_type)
             .expect("column allocated above")
@@ -105,11 +106,13 @@ impl App {
 
         let parent = self.node(id).parent;
         let siblings = &mut self.node_mut(parent).children;
-        if let Some(position) = siblings.iter().position(|&c| c == id) {
-            siblings.remove(position);
-        }
+        let position = siblings
+            .iter()
+            .position(|c| *c == id)
+            .expect("live node is in its parent's children");
+        siblings.remove(position);
 
-        // Iterative pre-order: free a node, then push its children. Every
+        // Parent before children: free a node, then push its children. Every
         // descendant is reached before we return, and each is freed after
         // its parent so nothing is left pointing into the tree.
         let mut pending = vec![id];
@@ -210,12 +213,12 @@ impl App {
         let slots = &self.slots;
         let widgets = &mut self.widgets;
         let column = widgets.column_of::<W>();
-        let store = column.and_then(|c| widgets.store_mut::<W>(c));
-        store.into_iter().flat_map(move |store| {
-            let widget_type = column.expect("a store exists only with a column");
+        let store = column.and_then(|c| widgets.store_mut::<W>(c).map(|s| (c, s)));
+        store.into_iter().flat_map(move |(widget_type, store)| {
             store.iter_mut().filter_map(move |(index, slot)| {
                 let w = slot.as_mut()?;
                 let id = NodeId::new(slots.generation(index), widget_type, index);
+                debug_assert!(slots.is_live(id), "a widget in a vacant slot");
                 Some((id, w))
             })
         })
