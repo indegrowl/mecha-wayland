@@ -61,6 +61,44 @@ impl Widget for Branch {
     }
 }
 
+/// Writes its own `Pos` during build and spawns a child with an initial
+/// `Size`.
+struct Placed {
+    child: Handle<Leaf>,
+}
+struct PlacedBuilder {
+    x: i32,
+}
+impl Build for PlacedBuilder {
+    type Widget = Placed;
+}
+impl Widget for Placed {
+    type Builder = PlacedBuilder;
+    fn build(b: PlacedBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+        s.component_mut::<Pos>(me).unwrap().x = b.x;
+        assert_eq!(s.component::<Pos>(me).map(|p| p.x), Some(b.x));
+        let child = s.spawn_with(me, Leaf, (Size { w: 3, h: 4 },));
+        Placed { child }
+    }
+}
+
+/// Records what its own `Pos` was when its build ran.
+struct Seen {
+    pos_at_build: Option<Pos>,
+}
+struct SeenBuilder;
+impl Build for SeenBuilder {
+    type Widget = Seen;
+}
+impl Widget for Seen {
+    type Builder = SeenBuilder;
+    fn build(_b: SeenBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+        Seen {
+            pos_at_build: s.component::<Pos>(me).copied(),
+        }
+    }
+}
+
 /// An app with `Pos` and `Size` registered.
 fn app() -> App {
     let mut app = App::new();
@@ -417,4 +455,109 @@ fn a_six_column_query_resolves_in_any_order() {
 fn querying_an_unregistered_type_panics() {
     let mut app = app();
     let _ = app.components::<(&Pos, &mut Never)>();
+}
+
+// ── split, bundles, and builders ────────────────────────────────────────
+
+#[test]
+fn split_walks_the_tree_while_writing_a_column() {
+    let mut app = app();
+    let branch = app.spawn(app.root(), Branch);
+    let kids = app.children(branch).unwrap().to_vec();
+    {
+        let (tree, mut cols) = app.split();
+        let mut size = cols.components::<&mut Size>();
+        for id in tree.descendants(tree.root()) {
+            let depth = tree.ancestors(id).count() as u32;
+            size.get_mut(id).unwrap().h = depth;
+        }
+    }
+    assert_eq!(app.component::<Size>(branch).map(|s| s.h), Some(1));
+    assert_eq!(app.component::<Size>(kids[0]).map(|s| s.h), Some(2));
+    assert_eq!(app.component::<Size>(kids[1]).map(|s| s.h), Some(2));
+    assert_eq!(
+        app.take_changed::<Size>().collect::<Vec<_>>(),
+        vec![branch.id(), kids[0], kids[1]],
+        "pre-order is the write order"
+    );
+}
+
+#[test]
+fn split_gives_single_node_access_beside_the_tree() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let (tree, mut cols) = app.split();
+    let parent = tree.parent(a).unwrap();
+    cols.component_mut::<Pos>(a).unwrap().x = 1;
+    assert_eq!(cols.component::<Pos>(a), Some(&Pos { x: 1, y: 0 }));
+    assert_eq!(cols.component::<Pos>(parent), Some(&Pos::default()));
+    drop(cols);
+    assert_eq!(app.take_changed::<Pos>().collect::<Vec<_>>(), vec![a.id()]);
+}
+
+#[test]
+fn spawn_with_values_are_in_place_before_the_build_runs() {
+    let mut app = app();
+    let seen = app.spawn_with(
+        app.root(),
+        SeenBuilder,
+        (Pos { x: 5, y: 6 }, Size { w: 7, h: 8 }),
+    );
+    assert_eq!(
+        app.widget::<Seen>(seen).unwrap().pos_at_build,
+        Some(Pos { x: 5, y: 6 }),
+        "the build saw its initial value"
+    );
+    assert_eq!(app.component::<Pos>(seen), Some(&Pos { x: 5, y: 6 }));
+    assert_eq!(app.component::<Size>(seen), Some(&Size { w: 7, h: 8 }));
+    assert_eq!(
+        app.take_changed::<Pos>().collect::<Vec<_>>(),
+        vec![seen.id()]
+    );
+    assert_eq!(
+        app.take_changed::<Size>().collect::<Vec<_>>(),
+        vec![seen.id()]
+    );
+}
+
+#[test]
+fn spawn_with_an_empty_bundle_is_spawn() {
+    let mut app = app();
+    let a = app.spawn_with(app.root(), Leaf, ());
+    assert_eq!(app.component::<Pos>(a), Some(&Pos::default()));
+    assert_eq!(
+        app.take_changed::<Pos>().count(),
+        0,
+        "default is not a write"
+    );
+}
+
+#[test]
+#[should_panic(expected = "not registered")]
+fn spawn_with_an_unregistered_type_panics() {
+    let mut app = app();
+    app.spawn_with(app.root(), Leaf, (Never,));
+}
+
+#[test]
+fn a_builder_writes_its_own_component_and_is_flagged() {
+    let mut app = app();
+    let placed = app.spawn(app.root(), PlacedBuilder { x: 42 });
+    assert_eq!(app.component::<Pos>(placed), Some(&Pos { x: 42, y: 0 }));
+    assert_eq!(
+        app.take_changed::<Pos>().collect::<Vec<_>>(),
+        vec![placed.id()]
+    );
+}
+
+#[test]
+fn a_builder_spawns_a_child_with_initial_values() {
+    let mut app = app();
+    let placed = app.spawn(app.root(), PlacedBuilder { x: 1 });
+    let child = app.widget::<Placed>(placed).unwrap().child;
+    assert_eq!(app.component::<Size>(child), Some(&Size { w: 3, h: 4 }));
+    assert_eq!(
+        app.take_changed::<Size>().collect::<Vec<_>>(),
+        vec![child.id()]
+    );
 }

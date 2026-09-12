@@ -67,6 +67,7 @@
 //! ```
 
 mod app;
+mod bundle;
 mod component;
 mod id;
 mod nodes;
@@ -77,6 +78,7 @@ mod tree;
 mod widgets;
 
 pub use app::{App, Spawner};
+pub use bundle::Bundle;
 pub use component::Component;
 pub use id::{Handle, NodeId};
 pub use query::{Columns, CompMut, Comps, CompsMut, Query};
@@ -85,7 +87,7 @@ pub use widgets::{Build, Widget};
 
 pub mod prelude {
     pub use crate::{
-        App, Build, Columns, CompMut, Component, Comps, CompsMut, Handle, NodeId, Query, Spawner,
-        Tree, Widget,
+        App, Build, Bundle, Columns, CompMut, Component, Comps, CompsMut, Handle, NodeId, Query,
+        Spawner, Tree, Widget,
     };
 }

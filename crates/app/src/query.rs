@@ -176,6 +176,20 @@ impl<'a> Columns<'a> {
             components: &mut *self.components,
         })
     }
+
+    /// One node's `C`. `None` for a stale id. Panics if `C` is not
+    /// registered.
+    pub fn component<C: Component>(&self, id: impl Into<NodeId>) -> Option<&C> {
+        self.components.column::<C>().get(self.slots, id.into())
+    }
+
+    /// A write guard for one node's `C`. `None` for a stale id. Panics if
+    /// `C` is not registered.
+    pub fn component_mut<C: Component>(&mut self, id: impl Into<NodeId>) -> Option<CompMut<'_, C>> {
+        self.components
+            .column_mut::<C>()
+            .get_mut(self.slots, id.into())
+    }
 }
 
 // ── queries ──────────────────────────────────────────────────────────────

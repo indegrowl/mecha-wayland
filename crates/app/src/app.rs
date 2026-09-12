@@ -4,7 +4,7 @@ use crate::query::{Columns, CompMut, Query};
 use crate::slots::Slots;
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
-use crate::{Build, Handle, NodeId, Widget};
+use crate::{Build, Bundle, Handle, NodeId, Widget};
 
 /// The runtime: a tree of nodes, each backed by a widget stored in a
 /// per-type column.
@@ -56,19 +56,33 @@ impl App {
 
     // ── tree: write ──────────────────────────────────────────────────────
 
+    /// [`App::spawn_with`] with no initial component values.
+    pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
+        self.spawn_with(parent, builder, ())
+    }
+
     /// Build `builder`'s widget, and whatever subtree its `build` attaches,
-    /// as the last child of `parent`.
+    /// as the last child of `parent`, with the component values in
+    /// `bundle` written to the new node first.
     ///
-    /// The node is linked into the tree before `build` runs, so the handle
-    /// `build` receives is the one returned here and `children(parent)`
-    /// already lists it. Its widget is stored after `build` returns, so
-    /// a lookup of the node's own widget during its build is `None`.
+    /// Order: the node is linked into the tree, then the bundle is written
+    /// (each value flags the node like any other write), then `build` runs
+    /// with a handle to the node and can read those values through
+    /// [`Spawner::component`], then the widget is stored. So `children(parent)`
+    /// already lists the node during its build, and a lookup of the node's
+    /// own widget during its build is `None`.
+    ///
+    /// `bundle` is `()` or a tuple of one to six components; see [`Bundle`].
     ///
     /// # Panics
     ///
-    /// If `parent` is not live. Spawning under a dead node is a caller
-    /// bug, not a state to recover from.
-    pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
+    /// If `parent` is not live, or a type in `bundle` is not registered.
+    pub fn spawn_with<B: Build, K: Bundle>(
+        &mut self,
+        parent: impl Into<NodeId>,
+        builder: B,
+        bundle: K,
+    ) -> Handle<B::Widget> {
         let parent = parent.into();
         assert!(
             self.slots.is_live(parent),
@@ -84,6 +98,8 @@ impl App {
         let id = NodeId::new(generation, widget_type, index);
         self.nodes.set(index, Node::new(parent));
         self.node_mut(parent).children.push(id);
+
+        bundle.insert(self, id);
 
         let handle = Handle::new(id);
         let widget = B::Widget::build(builder, handle, &mut Spawner { app: self });
@@ -286,6 +302,16 @@ impl App {
         Q::fetch(Columns::new(&self.slots, &mut self.components))
     }
 
+    /// The tree read-only and the columns mutably, at the same time. For a
+    /// pass that walks the tree while writing a column, such as layout
+    /// reading `children` and writing a rect.
+    pub fn split(&mut self) -> (Tree<'_>, Columns<'_>) {
+        (
+            Tree::new(&self.slots, &self.nodes),
+            Columns::new(&self.slots, &mut self.components),
+        )
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     /// The node record of an id the caller has already validated.
@@ -299,8 +325,10 @@ impl App {
 }
 
 /// What a [`Widget::build`] gets to touch while it runs: attaching children
-/// under the node being built. Later slices add handler registration and
-/// component and resource access here.
+/// under the node being built, and the components of `me` and of the
+/// nodes it spawned. Deliberately narrow: no whole-column views, no
+/// drain, no split. Later slices add handler registration and resource
+/// access here.
 pub struct Spawner<'a> {
     app: &'a mut App,
 }
@@ -311,6 +339,28 @@ impl Spawner<'_> {
     /// the same build. Either way it is live. See [`App::spawn`].
     pub fn spawn<B: Build>(&mut self, parent: impl Into<NodeId>, builder: B) -> Handle<B::Widget> {
         self.app.spawn(parent, builder)
+    }
+
+    /// [`Spawner::spawn`] with initial component values. See
+    /// [`App::spawn_with`].
+    pub fn spawn_with<B: Build, K: Bundle>(
+        &mut self,
+        parent: impl Into<NodeId>,
+        builder: B,
+        bundle: K,
+    ) -> Handle<B::Widget> {
+        self.app.spawn_with(parent, builder, bundle)
+    }
+
+    /// See [`App::component`].
+    pub fn component<C: Component>(&self, id: impl Into<NodeId>) -> Option<&C> {
+        self.app.component(id)
+    }
+
+    /// See [`App::component_mut`]. A write here flags like any other
+    /// write; the `Default` a spawn starts from does not.
+    pub fn component_mut<C: Component>(&mut self, id: impl Into<NodeId>) -> Option<CompMut<'_, C>> {
+        self.app.component_mut(id)
     }
 }
 
