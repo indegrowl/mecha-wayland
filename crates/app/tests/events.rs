@@ -566,3 +566,101 @@ fn a_panicking_handler_leaves_the_widget_and_the_other_handlers_in_place() {
     assert_eq!(app.widget::<Fuse>(f).unwrap().0, 2);
     assert_eq!(take_log(), ["second"], "both handlers survived the unwind");
 }
+
+// ── flush order ─────────────────────────────────────────────────────────
+
+#[test]
+fn emitted_reaches_systems_after_the_handlers_with_the_same_targets() {
+    fn on_emitted(app: &mut App, e: &Emitted<Add>) {
+        let total: u32 = e
+            .targets
+            .iter()
+            .map(|&id| app.widget::<Counter>(id).unwrap().0)
+            .sum();
+        log(format!(
+            "emitted {} to {} nodes, total now {total}",
+            e.event.0,
+            e.targets.len()
+        ));
+    }
+    let mut app = App::new();
+    app.system(on_emitted);
+    let a = app.spawn(app.root(), CounterBuilder);
+    let b = app.spawn(app.root(), CounterBuilder);
+    app.spawn(
+        app.root(),
+        WatcherBuilder {
+            target: a.id(),
+            tag: "w",
+        },
+    );
+    app.emit(Add(2), [a.id(), b.id()]);
+    app.emit(Inc, a);
+    app.flush();
+    // Both events ran (events drain before any signal), then the signal.
+    assert_eq!(
+        take_log(),
+        ["w target_is_me=false", "emitted 2 to 2 nodes, total now 5"]
+    );
+}
+
+#[test]
+fn a_handler_can_emit_and_signal_and_its_event_runs_before_its_signal() {
+    struct Relay;
+    struct Kick;
+    impl Event for Kick {}
+    struct RelayBuilder;
+    impl Build for RelayBuilder {
+        type Widget = Relay;
+    }
+    impl Widget for Relay {
+        type Builder = RelayBuilder;
+        fn build(_b: RelayBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Kick>(me, |ctx, _| {
+                let counters: Vec<NodeId> = ctx.widgets::<Counter>().map(|(id, _)| id).collect();
+                ctx.signal(Ping);
+                ctx.emit(Inc, counters);
+                log("kick");
+            });
+            Relay
+        }
+    }
+    fn on_ping(app: &mut App, _: &Ping) {
+        let total: u32 = app.widgets::<Counter>().map(|(_, c)| c.0).sum();
+        log(format!("ping {total}"));
+    }
+
+    let mut app = App::new();
+    app.system(on_ping);
+    app.spawn(app.root(), CounterBuilder);
+    let r = app.spawn(app.root(), RelayBuilder);
+    app.emit(Kick, r);
+    app.flush();
+    assert_eq!(take_log(), ["kick", "ping 1"]);
+}
+
+#[test]
+fn flush_runs_pending_events_before_each_signal() {
+    fn on_ping(app: &mut App, _: &Ping) {
+        let ids: Vec<NodeId> = app.widgets::<Counter>().map(|(id, _)| id).collect();
+        log(format!(
+            "ping sees {}",
+            app.widget::<Counter>(ids[0]).unwrap().0
+        ));
+        app.emit(Inc, ids);
+        app.signal(Pong);
+    }
+    fn on_pong(app: &mut App, _: &Pong) {
+        let v = app.widgets::<Counter>().map(|(_, c)| c.0).next().unwrap();
+        log(format!("pong sees {v}"));
+    }
+    let mut app = App::new();
+    app.system(on_ping).system(on_pong);
+    let c = app.spawn(app.root(), CounterBuilder);
+
+    // Queued as Ping then Inc; events go first, so Ping sees the Inc.
+    app.signal(Ping);
+    app.emit(Inc, c);
+    app.flush();
+    assert_eq!(take_log(), ["ping sees 1", "pong sees 2"]);
+}

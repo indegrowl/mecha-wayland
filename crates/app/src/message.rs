@@ -9,6 +9,7 @@
 //! when a message is sent; [`App::flush`](crate::App::flush) runs it.
 
 use crate::NodeId;
+use crate::handler::Targets;
 
 /// An app-wide message consumed by systems.
 ///
@@ -62,3 +63,13 @@ pub struct Removed {
     pub parent: NodeId,
 }
 impl Signal for Removed {}
+
+/// The signal form of an emit: the event by value and the nodes it went
+/// to, sent after those nodes' handlers ran. How a system observes an
+/// event without owning a node. Dropped, like any signal, when no system
+/// is registered for it.
+pub struct Emitted<E: Event> {
+    pub event: E,
+    pub targets: Targets,
+}
+impl<E: Event> Signal for Emitted<E> {}

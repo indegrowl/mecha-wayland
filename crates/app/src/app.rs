@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::component::{Component, Components};
 use crate::context::Context;
 use crate::handler::{Handler, HandlerColumns, Targets, dispatch};
-use crate::message::{Removed, Spawned};
+use crate::message::{Emitted, Removed, Spawned};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
 use crate::slots::Slots;
@@ -433,9 +433,12 @@ fn run_signal<S: Signal>(app: &mut App, signal: &S) {
     }
 }
 
-/// Run one queued emit: the handlers of every target.
+/// Run one queued emit: the handlers of every target, then the
+/// `Emitted<E>` signal for the systems, behind every signal already
+/// queued.
 fn run_event<E: Event>(app: &mut App, event: E, targets: Targets) {
     dispatch(app, &event, &targets);
+    app.signal(Emitted { event, targets });
 }
 
 /// What a [`Widget::build`] gets to touch while it runs: the node being
