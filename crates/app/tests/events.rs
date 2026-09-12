@@ -664,3 +664,50 @@ fn flush_runs_pending_events_before_each_signal() {
     app.flush();
     assert_eq!(take_log(), ["ping sees 1", "pong sees 2"]);
 }
+
+// ── tick and runner ─────────────────────────────────────────────────────
+
+#[test]
+fn tick_sends_tick_then_post_tick_and_flushes() {
+    fn on_tick(app: &mut App, _: &Tick) {
+        log("tick");
+        app.signal(Ping);
+    }
+    fn on_ping(_: &mut App, _: &Ping) {
+        log("ping");
+    }
+    fn on_post(_: &mut App, _: &PostTick) {
+        log("post");
+    }
+    let mut app = App::new();
+    app.system(on_post).system(on_tick).system(on_ping);
+    app.tick();
+    // Ping was queued behind PostTick, so it runs after it.
+    assert_eq!(take_log(), ["tick", "post", "ping"]);
+}
+
+#[test]
+fn run_hands_the_app_to_the_runner_and_returns_when_it_does() {
+    fn once(mut app: App) {
+        app.tick();
+        log(format!(
+            "ran with {} counters",
+            app.widgets::<Counter>().count()
+        ));
+    }
+    fn on_tick(_: &mut App, _: &Tick) {
+        log("tick");
+    }
+    let mut app = App::new();
+    app.system(on_tick).set_runner(once);
+    app.spawn(app.root(), CounterBuilder);
+    app.run();
+    assert_eq!(take_log(), ["tick", "ran with 1 counters"]);
+}
+
+#[test]
+#[should_panic(expected = "runner already set")]
+fn setting_the_runner_twice_panics() {
+    let mut app = App::new();
+    app.set_runner(|_| {}).set_runner(|_| {});
+}

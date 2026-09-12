@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::component::{Component, Components};
 use crate::context::Context;
 use crate::handler::{Handler, HandlerColumns, Targets, dispatch};
-use crate::message::{Emitted, Removed, Spawned};
+use crate::message::{Emitted, PostTick, Removed, Spawned, Tick};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
 use crate::slots::Slots;
@@ -37,6 +37,9 @@ pub struct App {
     events: VecDeque<Job>,
     /// Signals wait here. One runs per round of `flush`.
     signals: VecDeque<Job>,
+    /// Set by a module that owns the loop. `None` means the default
+    /// runner, which ticks forever.
+    runner: Option<fn(App)>,
 }
 
 impl Default for App {
@@ -56,6 +59,7 @@ impl App {
             handlers: HandlerColumns::new(),
             events: VecDeque::new(),
             signals: VecDeque::new(),
+            runner: None,
         };
         let column = app.widgets.column::<Root>(0);
         let (index, generation) = app.slots.alloc(column);
@@ -411,6 +415,37 @@ impl App {
         }
     }
 
+    // ── tick and runner ──────────────────────────────────────────────────
+
+    /// One step of the loop: queue [`Tick`], queue [`PostTick`], flush.
+    /// `Tick`'s systems run, then everything they caused, then `PostTick`'s
+    /// systems, then everything those caused.
+    pub fn tick(&mut self) {
+        self.signal(Tick);
+        self.signal(PostTick);
+        self.flush();
+    }
+
+    /// The function [`App::run`] hands the app to. Set by the module that
+    /// owns the loop, typically one that blocks on a compositor.
+    ///
+    /// # Panics
+    ///
+    /// If a runner is already set: two modules both think they own the
+    /// loop.
+    pub fn set_runner(&mut self, runner: fn(App)) -> &mut Self {
+        assert!(self.runner.is_none(), "runner already set");
+        self.runner = Some(runner);
+        self
+    }
+
+    /// Hand the app to the runner. Returns when the runner does; the
+    /// default runner never does.
+    pub fn run(self) {
+        let runner = self.runner.unwrap_or(default_runner);
+        runner(self)
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     /// The node record of an id the caller has already validated.
@@ -420,6 +455,15 @@ impl App {
 
     fn node_mut(&mut self, id: NodeId) -> &mut Node {
         self.nodes.get_mut(id.index())
+    }
+}
+
+/// The runner when no module set one: tick forever. A busy loop, right
+/// for a headless app until a presentation module sets a runner that
+/// blocks.
+fn default_runner(mut app: App) {
+    loop {
+        app.tick();
     }
 }
 

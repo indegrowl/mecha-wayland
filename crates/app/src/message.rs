@@ -29,14 +29,14 @@ pub trait Signal: 'static {}
 /// ```
 pub trait Event: 'static {}
 
-/// The built-in signal `App::tick` sends first, once per tick. Systems
-/// that do a frame's work sit here.
+/// The built-in signal [`App::tick`](crate::App::tick) sends first, once
+/// per tick. Systems that do a frame's work sit here.
 pub struct Tick;
 impl Signal for Tick {}
 
-/// The built-in signal `App::tick` sends after [`Tick`], once everything
-/// `Tick` caused has run. The `OnChanged` drains sit here so a tick's
-/// writes fire in the same tick.
+/// The built-in signal [`App::tick`](crate::App::tick) sends after
+/// [`Tick`], once everything `Tick` caused has run. The `OnChanged` drains
+/// sit here so a tick's writes fire in the same tick.
 pub struct PostTick;
 impl Signal for PostTick {}
 
