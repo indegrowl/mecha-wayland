@@ -85,6 +85,18 @@ fn root_layout(app: &App) -> Layout {
     *app.component::<Layout>(app.root()).unwrap()
 }
 
+/// A widget with nothing in it.
+struct Leaf;
+impl Build for Leaf {
+    type Widget = Leaf;
+}
+impl Widget for Leaf {
+    type Builder = Leaf;
+    fn build(b: Leaf, _me: Handle<Self>, _s: &mut Spawner<'_, Self>) -> Self {
+        b
+    }
+}
+
 // ── install ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -163,4 +175,139 @@ fn two_modules_setting_the_runner_is_a_configuration_error() {
     }
     let mut app = App::new();
     app.add_module(LoopOwner).add_module(LoopOwner);
+}
+
+// ── OnChanged ───────────────────────────────────────────────────────────
+
+/// Writes its own `Layout` on every `Sync`, and logs `OnChanged<Layout>`
+/// when it fires.
+struct Box_;
+struct BoxBuilder;
+impl Build for BoxBuilder {
+    type Widget = Box_;
+}
+impl Widget for Box_ {
+    type Builder = BoxBuilder;
+    fn build(_b: BoxBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        s.on::<OnChanged<Layout>>(me, |ctx, _| {
+            let l = *ctx.component::<Layout>().unwrap();
+            log(format!("changed to {},{}", l.x, l.y));
+        });
+        Box_
+    }
+}
+
+/// Nudges every `Box_` on `Tick`.
+fn nudge(app: &mut App, _: &Tick) {
+    let ids: Vec<NodeId> = app.widgets::<Box_>().map(|(id, _)| id).collect();
+    for id in ids {
+        let mut layout = app.component_mut::<Layout>(id).unwrap();
+        layout.x += 1.0;
+    }
+}
+
+/// A `Tick` system registered after `nudge`, whose write must still fire
+/// in the same tick.
+fn nudge_later(app: &mut App, _: &Tick) {
+    let ids: Vec<NodeId> = app.widgets::<Box_>().map(|(id, _)| id).collect();
+    for id in ids {
+        let mut layout = app.component_mut::<Layout>(id).unwrap();
+        layout.y += 1.0;
+    }
+}
+
+#[test]
+fn a_write_during_tick_fires_on_changed_in_the_same_tick_once_per_node() {
+    let mut app = App::new();
+    app.register_component::<Layout>()
+        .system(nudge)
+        .system(nudge_later);
+    app.spawn(app.root(), BoxBuilder);
+    app.spawn(app.root(), BoxBuilder);
+    app.tick();
+    assert_eq!(take_log(), ["changed to 1,1", "changed to 1,1"]);
+    app.tick();
+    assert_eq!(take_log(), ["changed to 2,2", "changed to 2,2"]);
+}
+
+#[test]
+fn a_tick_with_no_writes_fires_nothing() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.spawn(app.root(), BoxBuilder);
+    app.tick();
+    assert!(take_log().is_empty());
+}
+
+#[test]
+fn a_node_removed_after_its_write_does_not_fire() {
+    let mut app = App::new();
+    app.register_component::<Layout>().system(nudge);
+    let keep = app.spawn(app.root(), BoxBuilder);
+    let drop_ = app.spawn(app.root(), BoxBuilder);
+    fn remove_second(app: &mut App, _: &Tick) {
+        let second = app.children(app.root()).unwrap()[1];
+        app.remove(second);
+    }
+    app.system(remove_second);
+    app.tick();
+    assert!(app.is_live(keep));
+    assert!(!app.is_live(drop_));
+    assert_eq!(take_log(), ["changed to 1,0"]);
+}
+
+#[test]
+fn a_system_on_emitted_on_changed_sees_every_changed_id() {
+    fn on_changed(app: &mut App, e: &Emitted<OnChanged<Layout>>) {
+        let live = e.targets.iter().all(|&id| app.is_live(id));
+        log(format!("{} changed, all live={live}", e.targets.len()));
+    }
+    let mut app = App::new();
+    app.register_component::<Layout>()
+        .system(nudge)
+        .system(on_changed);
+    app.spawn(app.root(), BoxBuilder);
+    app.spawn(app.root(), BoxBuilder);
+    app.spawn(app.root(), Leaf);
+    app.tick();
+    assert_eq!(
+        take_log(),
+        [
+            "changed to 1,0",
+            "changed to 1,0",
+            "2 changed, all live=true"
+        ]
+    );
+}
+
+#[test]
+fn a_write_from_a_change_handler_drains_on_the_next_tick() {
+    struct Echo;
+    struct EchoBuilder;
+    impl Build for EchoBuilder {
+        type Widget = Echo;
+    }
+    impl Widget for Echo {
+        type Builder = EchoBuilder;
+        fn build(_b: EchoBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<OnChanged<Layout>>(me, |ctx, _| {
+                let x = ctx.component::<Layout>().unwrap().x;
+                log(format!("echo {x}"));
+                if x < 2.0 {
+                    ctx.component_mut::<Layout>().unwrap().x = 2.0;
+                }
+            });
+            Echo
+        }
+    }
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    let e = app.spawn(app.root(), EchoBuilder);
+    app.component_mut::<Layout>(e).unwrap().x = 1.0;
+    app.tick();
+    assert_eq!(take_log(), ["echo 1"]);
+    app.tick();
+    assert_eq!(take_log(), ["echo 2"]);
+    app.tick();
+    assert!(take_log().is_empty());
 }

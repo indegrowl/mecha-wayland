@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::component::{Component, Components};
 use crate::context::Context;
 use crate::handler::{Handler, HandlerColumns, Targets, dispatch};
-use crate::message::{Emitted, PostTick, Removed, Spawned, Tick};
+use crate::message::{Emitted, OnChanged, PostTick, Removed, Spawned, Tick};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
 use crate::slots::Slots;
@@ -277,14 +277,15 @@ impl App {
 
     /// Allocate a column for `C`. Every live node, the root included,
     /// holds `C::default()` from here on, and so does every node spawned
-    /// later.
+    /// later. Also installs the [`PostTick`] system that turns the
+    /// column's changed list into [`OnChanged<C>`] events each tick.
     ///
     /// # Panics
     ///
     /// If `C` is already registered.
     pub fn register_component<C: Component>(&mut self) -> &mut Self {
         self.components.register::<C>(self.slots.len());
-        self
+        self.system::<PostTick>(drain_changed::<C>)
     }
 
     /// One node's `C`. `None` if `id` is stale.
@@ -315,7 +316,8 @@ impl App {
     /// dropping the iterator early still clears. O(changed).
     ///
     /// This is the hand-off to the events slice, which will turn each id
-    /// into an `OnChanged<C>` dispatch. Nothing fires here.
+    /// into an [`OnChanged<C>`](crate::OnChanged) dispatch. Nothing fires
+    /// here.
     ///
     /// # Panics
     ///
@@ -492,6 +494,17 @@ fn run_signal<S: Signal>(app: &mut App, signal: &S) {
 fn run_event<E: Event>(app: &mut App, event: E, targets: Targets) {
     dispatch(app, &event, &targets);
     app.signal(Emitted { event, targets });
+}
+
+/// The `PostTick` system behind `OnChanged<C>`: drain the changed list
+/// and, if anything came out, emit once to all of it. On `PostTick`
+/// rather than `Tick` so that writes by every `Tick` system, whenever it
+/// was registered, and by every event `Tick` caused, fire in this tick.
+fn drain_changed<C: Component>(app: &mut App, _: &PostTick) {
+    let ids: Vec<NodeId> = app.take_changed::<C>().collect();
+    if !ids.is_empty() {
+        app.emit(OnChanged::<C>::new(), ids);
+    }
 }
 
 /// What a [`Widget::build`] gets to touch while it runs: the node being

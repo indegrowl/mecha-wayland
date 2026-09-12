@@ -8,6 +8,9 @@
 //! Both are markers. Any `'static` type can be one, or both. Nothing runs
 //! when a message is sent; [`App::flush`](crate::App::flush) runs it.
 
+use std::marker::PhantomData;
+
+use crate::Component;
 use crate::NodeId;
 use crate::handler::Targets;
 
@@ -35,8 +38,9 @@ pub struct Tick;
 impl Signal for Tick {}
 
 /// The built-in signal [`App::tick`](crate::App::tick) sends after
-/// [`Tick`], once everything `Tick` caused has run. The `OnChanged` drains
-/// sit here so a tick's writes fire in the same tick.
+/// [`Tick`], once everything `Tick` caused has run. The
+/// [`OnChanged`](crate::OnChanged) drains sit here so a tick's writes
+/// fire in the same tick.
 pub struct PostTick;
 impl Signal for PostTick {}
 
@@ -73,3 +77,25 @@ pub struct Emitted<E: Event> {
     pub targets: Targets,
 }
 impl<E: Event> Signal for Emitted<E> {}
+
+/// A node's `C` was written since the last tick's drain. Emitted once per
+/// tick, from a `PostTick` system that `register_component::<C>` installs,
+/// to every node `take_changed::<C>()` yields: a node written twice fires
+/// once, a node removed after its write does not fire. A handler is
+/// `s.on::<OnChanged<Rect>>(me, ..)`; a system that wants every changed id
+/// at once registers for `Emitted<OnChanged<Rect>>` and reads `targets`.
+pub struct OnChanged<C: Component>(PhantomData<fn() -> C>);
+
+impl<C: Component> OnChanged<C> {
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<C: Component> Default for OnChanged<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C: Component> Event for OnChanged<C> {}
