@@ -45,7 +45,7 @@
 //! # impl Build for Leaf { type Widget = Leaf; }
 //! # impl Widget for Leaf {
 //! #     type Builder = Leaf;
-//! #     fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_>) -> Self { b }
+//! #     fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self { b }
 //! # }
 //! #[derive(Default, PartialEq, Debug)]
 //! struct Depth(u32);
@@ -80,7 +80,7 @@
 //! impl Build for CounterBuilder { type Widget = Counter; }
 //! impl Widget for Counter {
 //!     type Builder = CounterBuilder;
-//!     fn build(b: CounterBuilder, _me: Handle<Self>, _s: &mut Spawner<'_>) -> Self {
+//!     fn build(b: CounterBuilder, _me: Handle<Self>, _s: &mut Spawner<'_, Self>) -> Self {
 //!         Counter(b.start)
 //!     }
 //! }
@@ -90,7 +90,7 @@
 //! impl Build for RowBuilder { type Widget = Row; }
 //! impl Widget for Row {
 //!     type Builder = RowBuilder;
-//!     fn build(b: RowBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+//!     fn build(b: RowBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
 //!         for start in 0..b.counters {
 //!             s.spawn(me, CounterBuilder { start });
 //!         }

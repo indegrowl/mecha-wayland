@@ -106,7 +106,14 @@ impl App {
         bundle.insert(self, id);
 
         let handle = Handle::new(id);
-        let widget = B::Widget::build(builder, handle, &mut Spawner { app: self });
+        let widget = B::Widget::build(
+            builder,
+            handle,
+            &mut Spawner {
+                app: self,
+                me: handle,
+            },
+        );
         debug_assert!(self.slots.is_live(id), "build removed its own node");
         self.widgets
             .store_mut::<B::Widget>(widget_type)
@@ -339,16 +346,23 @@ impl App {
     }
 }
 
-/// What a [`Widget::build`] gets to touch while it runs: attaching children
-/// under the node being built, and single-node component access, meant
-/// for `me` and the nodes it spawned. Deliberately narrow: no
-/// whole-column views, no drain, no split. Later slices add handler
-/// registration and resource access here.
-pub struct Spawner<'a> {
+/// What a [`Widget::build`] gets to touch while it runs: the node being
+/// built, attaching children under it, single-node component access
+/// meant for `me` and the nodes it spawned, and attaching handlers on
+/// its behalf. Typed by the widget being built so a handler it registers
+/// knows what `me` is. Deliberately narrow: no whole-column views, no
+/// drain, no split. A later slice adds resource access here.
+pub struct Spawner<'a, W: Widget> {
     app: &'a mut App,
+    me: Handle<W>,
 }
 
-impl Spawner<'_> {
+impl<W: Widget> Spawner<'_, W> {
+    /// The node being built: the `me` the build was given.
+    pub fn me(&self) -> Handle<W> {
+        self.me
+    }
+
     /// Build `builder` as the last child of `parent`, which is the `me`
     /// the build was given or a handle returned by an earlier `spawn` in
     /// the same build. Either way it is live. See [`App::spawn`].
@@ -397,7 +411,7 @@ mod tests {
     }
     impl Widget for Leaf {
         type Builder = Leaf;
-        fn build(b: Leaf, _: Handle<Leaf>, _: &mut Spawner<'_>) -> Leaf {
+        fn build(b: Leaf, _: Handle<Leaf>, _: &mut Spawner<'_, Self>) -> Leaf {
             b
         }
     }

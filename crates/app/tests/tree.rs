@@ -10,7 +10,7 @@ impl Build for LabelBuilder {
 }
 impl Widget for Label {
     type Builder = LabelBuilder;
-    fn build(b: LabelBuilder, _me: Handle<Self>, _s: &mut Spawner<'_>) -> Self {
+    fn build(b: LabelBuilder, _me: Handle<Self>, _s: &mut Spawner<'_, Self>) -> Self {
         Label(b.0.to_string())
     }
 }
@@ -26,7 +26,7 @@ impl Build for PairBuilder {
 }
 impl Widget for Pair {
     type Builder = PairBuilder;
-    fn build(_b: PairBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+    fn build(_b: PairBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
         let left = s.spawn(me, LabelBuilder("left"));
         let right = s.spawn(me, LabelBuilder("right"));
         Pair { left, right }
@@ -44,7 +44,7 @@ impl Build for ChainBuilder {
 }
 impl Widget for Chain {
     type Builder = ChainBuilder;
-    fn build(_b: ChainBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+    fn build(_b: ChainBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
         let list = s.spawn(me, LabelBuilder("list"));
         s.spawn(list, LabelBuilder("item-a"));
         let b = s.spawn(list, LabelBuilder("item-b"));
@@ -60,8 +60,21 @@ impl Build for Ghost {
 }
 impl Widget for Ghost {
     type Builder = Ghost;
-    fn build(b: Ghost, _me: Handle<Self>, _s: &mut Spawner<'_>) -> Self {
+    fn build(b: Ghost, _me: Handle<Self>, _s: &mut Spawner<'_, Self>) -> Self {
         b
+    }
+}
+
+/// Records whether the spawner's `me` is the handle `build` was given.
+struct Echo(bool);
+struct EchoBuilder;
+impl Build for EchoBuilder {
+    type Widget = Echo;
+}
+impl Widget for Echo {
+    type Builder = EchoBuilder;
+    fn build(_b: EchoBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        Echo(s.me() == me)
     }
 }
 
@@ -397,4 +410,11 @@ fn tree_view_reads_match_the_app_reads_and_outlive_the_call() {
     let children = tree.children(pair).unwrap();
     let copy = tree;
     assert_eq!(copy.children(pair), Some(children));
+}
+
+#[test]
+fn spawner_me_is_the_handle_build_receives() {
+    let mut app = App::new();
+    let echo = app.spawn(app.root(), EchoBuilder);
+    assert!(app.widget::<Echo>(echo).unwrap().0);
 }

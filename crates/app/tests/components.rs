@@ -42,7 +42,7 @@ impl Build for Leaf {
 }
 impl Widget for Leaf {
     type Builder = Leaf;
-    fn build(b: Leaf, _me: Handle<Self>, _s: &mut Spawner<'_>) -> Self {
+    fn build(b: Leaf, _me: Handle<Self>, _s: &mut Spawner<'_, Self>) -> Self {
         b
     }
 }
@@ -54,7 +54,7 @@ impl Build for Branch {
 }
 impl Widget for Branch {
     type Builder = Branch;
-    fn build(b: Branch, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+    fn build(b: Branch, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
         s.spawn(me, Leaf);
         s.spawn(me, Leaf);
         b
@@ -74,7 +74,7 @@ impl Build for PlacedBuilder {
 }
 impl Widget for Placed {
     type Builder = PlacedBuilder;
-    fn build(b: PlacedBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+    fn build(b: PlacedBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
         s.component_mut::<Pos>(me).unwrap().x = b.x;
         assert_eq!(s.component::<Pos>(me).map(|p| p.x), Some(b.x));
         let child = s.spawn_with(me, Leaf, (Size { w: 3, h: 4 },));
@@ -92,7 +92,7 @@ impl Build for SeenBuilder {
 }
 impl Widget for Seen {
     type Builder = SeenBuilder;
-    fn build(_b: SeenBuilder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self {
+    fn build(_b: SeenBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
         Seen {
             pos_at_build: s.component::<Pos>(me).copied(),
         }

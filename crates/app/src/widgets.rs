@@ -12,7 +12,7 @@ use crate::{Handle, Spawner};
 /// `s` attaches children under it.
 pub trait Widget: Sized + 'static {
     type Builder: Build<Widget = Self>;
-    fn build(builder: Self::Builder, me: Handle<Self>, s: &mut Spawner<'_>) -> Self;
+    fn build(builder: Self::Builder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self;
 }
 
 /// Marker linking a builder back to its widget so `spawn(parent, builder)`
@@ -32,7 +32,7 @@ impl Build for Root {
 
 impl Widget for Root {
     type Builder = Root;
-    fn build(builder: Root, _: Handle<Root>, _: &mut Spawner<'_>) -> Root {
+    fn build(builder: Root, _: Handle<Root>, _: &mut Spawner<'_, Root>) -> Root {
         builder
     }
 }
@@ -123,7 +123,7 @@ mod tests {
     }
     impl Widget for A {
         type Builder = ABuilder;
-        fn build(b: ABuilder, _: Handle<A>, _: &mut Spawner<'_>) -> A {
+        fn build(b: ABuilder, _: Handle<A>, _: &mut Spawner<'_, Self>) -> A {
             A(b.0)
         }
     }
@@ -134,7 +134,7 @@ mod tests {
     }
     impl Widget for B {
         type Builder = B;
-        fn build(b: B, _: Handle<B>, _: &mut Spawner<'_>) -> B {
+        fn build(b: B, _: Handle<B>, _: &mut Spawner<'_, Self>) -> B {
             b
         }
     }
