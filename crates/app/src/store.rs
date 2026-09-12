@@ -49,6 +49,15 @@ impl<T: Default> Store<T> {
             .enumerate()
             .map(|(i, v)| (i as u64, v))
     }
+
+    /// Every slot in order, vacant ones included.
+    pub fn as_slice(&self) -> &[T] {
+        &self.slots
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.slots
+    }
 }
 
 /// Object-safe view of a [`Store`], so a holder of many columns can grow
@@ -127,5 +136,13 @@ mod tests {
         assert_eq!(*back.get(1), 0, "freed slot is back to the default");
         assert_eq!(*back.get(2), 0);
         assert!(erased.as_any_mut().downcast_mut::<Store<u16>>().is_none());
+    }
+
+    #[test]
+    fn slices_expose_every_slot_in_order() {
+        let mut store = Store::<u8>::new();
+        store.grow(3);
+        store.as_mut_slice()[1] = 4;
+        assert_eq!(store.as_slice(), &[0, 4, 0]);
     }
 }

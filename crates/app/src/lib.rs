@@ -67,6 +67,7 @@
 //! ```
 
 mod app;
+mod component;
 mod id;
 mod nodes;
 mod slots;
@@ -75,6 +76,7 @@ mod tree;
 mod widgets;
 
 pub use app::{App, Spawner};
+pub use component::Component;
 pub use id::{Handle, NodeId};
 pub use tree::Tree;
 pub use widgets::{Build, Widget};
