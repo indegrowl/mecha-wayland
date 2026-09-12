@@ -87,6 +87,41 @@ impl App {
         handle
     }
 
+    /// Remove `id` and every node under it. Every id in the subtree is
+    /// stale afterwards and its slots go back to the free list.
+    ///
+    /// Returns `false`, changing nothing, if `id` is already stale:
+    /// removing a subtree twice is legitimate once queued work exists.
+    ///
+    /// # Panics
+    ///
+    /// If `id` is the root.
+    pub fn remove(&mut self, id: impl Into<NodeId>) -> bool {
+        let id = id.into();
+        if !self.slots.is_live(id) {
+            return false;
+        }
+        assert!(id != NodeId::ROOT, "the root node cannot be removed");
+
+        let parent = self.node(id).parent;
+        let siblings = &mut self.node_mut(parent).children;
+        if let Some(position) = siblings.iter().position(|&c| c == id) {
+            siblings.remove(position);
+        }
+
+        // Iterative pre-order: free a node, then push its children. Every
+        // descendant is reached before we return, and each is freed after
+        // its parent so nothing is left pointing into the tree.
+        let mut pending = vec![id];
+        while let Some(current) = pending.pop() {
+            self.slots.free(current.index());
+            self.widgets.free(current.widget_type(), current.index());
+            let node = self.nodes.take(current.index());
+            pending.extend(node.children);
+        }
+        true
+    }
+
     // ── tree: read ───────────────────────────────────────────────────────
 
     /// Whether `id` names a node that exists right now.
@@ -190,5 +225,47 @@ mod tests {
         assert_eq!(app.root(), NodeId::new(0, 0, 0));
         assert_eq!(app.widgets.column_of::<Root>(), Some(0));
         assert!(app.widgets.store::<Root>(0).unwrap().get(0).is_some());
+    }
+
+    struct Leaf;
+    impl Build for Leaf {
+        type Widget = Leaf;
+    }
+    impl Widget for Leaf {
+        type Builder = Leaf;
+        fn build(b: Leaf, _: Handle<Leaf>, _: &mut Spawner<'_>) -> Leaf {
+            b
+        }
+    }
+
+    #[test]
+    fn a_reused_slot_keeps_its_index_and_bumps_the_generation() {
+        let mut app = App::new();
+        let old = app.spawn(app.root(), Leaf).id();
+        assert!(app.remove(old));
+        let new = app.spawn(app.root(), Leaf).id();
+        assert_eq!(new.index(), old.index());
+        assert_eq!(new.widget_type(), old.widget_type());
+        assert_eq!(new.generation(), old.generation() + 1);
+        assert!(app.is_live(new));
+        assert!(!app.is_live(old));
+    }
+
+    #[test]
+    fn removed_slots_are_back_to_default_in_every_arena() {
+        let mut app = App::new();
+        let id = app.spawn(app.root(), Leaf).id();
+        app.remove(id);
+        let node = app.nodes.get(id.index());
+        assert_eq!(node.parent, NodeId::ROOT);
+        assert!(node.children.is_empty());
+        let column = app.widgets.column_of::<Leaf>().unwrap();
+        assert!(
+            app.widgets
+                .store::<Leaf>(column)
+                .unwrap()
+                .get(id.index())
+                .is_none()
+        );
     }
 }

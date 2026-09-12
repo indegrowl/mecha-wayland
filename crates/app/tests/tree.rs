@@ -162,3 +162,76 @@ fn widgets_by_type_lists_every_live_one_in_spawn_order() {
     assert_eq!(app.widgets::<Pair>().count(), 1);
     assert_eq!(app.widgets::<Ghost>().count(), 0, "never spawned");
 }
+
+// ── remove ──────────────────────────────────────────────────────────────
+
+#[test]
+fn remove_frees_the_whole_subtree() {
+    let mut app = App::new();
+    let root = app.root();
+    let before = app.spawn(root, LabelBuilder("before"));
+    let pair = app.spawn(root, PairBuilder);
+    let after = app.spawn(root, LabelBuilder("after"));
+    let kids = app.children(pair).unwrap().to_vec();
+
+    assert!(app.remove(pair));
+
+    assert!(!app.is_live(pair));
+    assert!(app.widget::<Pair>(pair).is_none());
+    assert_eq!(app.children(pair), None);
+    for kid in &kids {
+        assert!(!app.is_live(*kid));
+        assert!(app.widget::<Label>(*kid).is_none());
+        assert_eq!(app.parent(*kid), None);
+    }
+    assert_eq!(app.children(root), Some(&[before.id(), after.id()][..]));
+    assert_eq!(app.widgets::<Label>().count(), 2);
+    assert_eq!(app.widgets::<Pair>().count(), 0);
+    assert!(!app.remove(pair), "second removal is a no-op");
+    assert!(app.is_live(before) && app.is_live(after));
+}
+
+#[test]
+fn a_removed_id_stays_stale_after_its_slot_is_reused() {
+    let mut app = App::new();
+    let root = app.root();
+    let old = app.spawn(root, LabelBuilder("old"));
+    assert!(app.remove(old));
+    // One freed slot in the FIFO, so this spawn reuses it.
+    let new = app.spawn(root, LabelBuilder("new"));
+    assert_ne!(new.id(), old.id());
+    assert!(!app.is_live(old));
+    assert!(app.widget::<Label>(old).is_none());
+    assert_eq!(app.widget::<Label>(new).unwrap().0, "new");
+    assert_eq!(app.children(root), Some(&[new.id()][..]));
+    assert_eq!(app.widgets::<Label>().count(), 1);
+}
+
+#[test]
+fn removing_a_leaf_keeps_its_siblings() {
+    let mut app = App::new();
+    let root = app.root();
+    let a = app.spawn(root, LabelBuilder("a"));
+    let b = app.spawn(root, LabelBuilder("b"));
+    let c = app.spawn(root, LabelBuilder("c"));
+    assert!(app.remove(b));
+    assert_eq!(app.children(root), Some(&[a.id(), c.id()][..]));
+    assert!(app.widget::<Label>(a).is_some());
+    assert!(app.widget::<Label>(c).is_some());
+}
+
+#[test]
+#[should_panic(expected = "root")]
+fn removing_the_root_panics() {
+    let mut app = App::new();
+    app.remove(app.root());
+}
+
+#[test]
+#[should_panic(expected = "stale parent")]
+fn spawn_under_a_removed_parent_panics() {
+    let mut app = App::new();
+    let gone = app.spawn(app.root(), LabelBuilder("gone"));
+    app.remove(gone);
+    app.spawn(gone, LabelBuilder("orphan"));
+}
