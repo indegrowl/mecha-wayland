@@ -8,8 +8,12 @@ edition = "2024"
 [dependencies]
 
 [workspace]
-members = []
+members = ["crates/app"]
 resolver = "3"
+
+[workspace.dependencies]
+app = { path = "crates/app" }
+smallvec = "1"
 
 [profile.dev]
 debug = 1
