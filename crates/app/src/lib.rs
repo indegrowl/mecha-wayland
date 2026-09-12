@@ -22,6 +22,52 @@
 //! [`App::remove`] returns `false` for a stale id. Only two things panic:
 //! spawning under a dead parent and removing the root. Both are caller
 //! bugs, not states to recover from.
+//! Component calls add four more caller-bug panics: registering a type
+//! twice, using a type that was never registered, indexing a view with a
+//! stale id, and a query that names one type twice with a `&mut`.
+//!
+//! # Components
+//!
+//! Per-node data outside the widget. Every node carries one value of
+//! every registered [`Component`] type, `Default` until written. Reads
+//! are plain references. Writes go through a [`CompMut`] guard whose
+//! first `DerefMut` records the node as changed, and
+//! [`App::take_changed`] drains that record in first-write order.
+//! [`App::components`] fetches one or more columns at once as [`Comps`]
+//! and [`CompsMut`] views, and [`App::split`] lends the tree read-only
+//! beside them. [`App::spawn_with`] gives a node its initial values as a
+//! [`Bundle`], a tuple of components written before its `build` runs.
+//!
+//! ```
+//! use app::prelude::*;
+//! # struct Leaf;
+//! # impl Build for Leaf { type Widget = Leaf; }
+//! # impl Widget for Leaf {
+//! #     type Builder = Leaf;
+//! #     fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_>) -> Self { b }
+//! # }
+//! #[derive(Default, PartialEq, Debug)]
+//! struct Depth(u32);
+//! impl Component for Depth {}
+//!
+//! let mut app = App::new();
+//! app.register_component::<Depth>();
+//! let a = app.spawn(app.root(), Leaf);
+//! let b = app.spawn(a, Leaf);
+//!
+//! let (tree, mut cols) = app.split();
+//! let mut depth = cols.components::<&mut Depth>();
+//! for id in tree.descendants(tree.root()) {
+//!     depth.get_mut(id).unwrap().0 = tree.ancestors(id).count() as u32;
+//! }
+//! drop(depth);
+//!
+//! assert_eq!(app.component::<Depth>(b), Some(&Depth(2)));
+//! assert_eq!(
+//!     app.take_changed::<Depth>().collect::<Vec<_>>(),
+//!     vec![a.id(), b.id()]
+//! );
+//! ```
 //!
 //! # Quick start
 //!
