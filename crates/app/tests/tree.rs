@@ -97,3 +97,68 @@ fn every_spawn_gets_a_distinct_id() {
     }
     assert_eq!(app.children(root).unwrap().len(), 10);
 }
+
+// ── widgets ─────────────────────────────────────────────────────────────
+
+#[test]
+fn widget_lookup_by_handle_and_by_id() {
+    let mut app = App::new();
+    let a = app.spawn(app.root(), LabelBuilder("a"));
+    assert_eq!(app.widget::<Label>(a).map(|l| l.0.as_str()), Some("a"));
+    app.widget_mut::<Label>(a).unwrap().0.push('!');
+    assert_eq!(
+        app.widget::<Label>(a.id()).map(|l| l.0.as_str()),
+        Some("a!")
+    );
+}
+
+#[test]
+fn widget_of_another_type_is_none() {
+    let mut app = App::new();
+    let a = app.spawn(app.root(), LabelBuilder("a"));
+    assert!(app.widget::<Pair>(a).is_none());
+    assert!(app.widget_mut::<Pair>(a).is_none());
+    assert!(app.widget::<Ghost>(a).is_none(), "type with no column");
+}
+
+#[test]
+fn a_build_can_keep_handles_to_its_children() {
+    let mut app = App::new();
+    let pair = app.spawn(app.root(), PairBuilder);
+    let (left, right) = {
+        let p = app.widget::<Pair>(pair).unwrap();
+        (p.left, p.right)
+    };
+    assert_eq!(app.widget::<Label>(left).unwrap().0, "left");
+    assert_eq!(app.widget::<Label>(right).unwrap().0, "right");
+    assert_eq!(app.children(pair), Some(&[left.id(), right.id()][..]));
+}
+
+#[test]
+fn widgets_by_type_lists_every_live_one_in_spawn_order() {
+    let mut app = App::new();
+    let root = app.root();
+    let a = app.spawn(root, LabelBuilder("a"));
+    let _pair = app.spawn(root, PairBuilder);
+    let b = app.spawn(root, LabelBuilder("b"));
+
+    let labels: Vec<(NodeId, String)> = app
+        .widgets::<Label>()
+        .map(|(id, l)| (id, l.0.clone()))
+        .collect();
+    let names: Vec<&str> = labels.iter().map(|(_, s)| s.as_str()).collect();
+    assert_eq!(
+        names,
+        ["a", "left", "right", "b"],
+        "fresh slots come in spawn order"
+    );
+    assert_eq!(labels[0].0, a.id());
+    assert_eq!(labels[3].0, b.id());
+
+    for (_, l) in app.widgets::<Label>() {
+        l.0.make_ascii_uppercase();
+    }
+    assert_eq!(app.widget::<Label>(a).unwrap().0, "A");
+    assert_eq!(app.widgets::<Pair>().count(), 1);
+    assert_eq!(app.widgets::<Ghost>().count(), 0, "never spawned");
+}

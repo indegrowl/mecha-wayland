@@ -108,6 +108,50 @@ impl App {
             .then(|| self.node(id).children.as_slice())
     }
 
+    // ── widgets ──────────────────────────────────────────────────────────
+
+    /// `None` if `id` is stale, holds a widget of another type, or is the
+    /// node whose `build` is currently running.
+    pub fn widget<W: Widget>(&self, id: impl Into<NodeId>) -> Option<&W> {
+        let id = id.into();
+        if !self.slots.is_live(id) {
+            return None;
+        }
+        self.widgets
+            .store::<W>(id.widget_type())?
+            .get(id.index())
+            .as_ref()
+    }
+
+    /// `None` under the same conditions as [`App::widget`].
+    pub fn widget_mut<W: Widget>(&mut self, id: impl Into<NodeId>) -> Option<&mut W> {
+        let id = id.into();
+        if !self.slots.is_live(id) {
+            return None;
+        }
+        self.widgets
+            .store_mut::<W>(id.widget_type())?
+            .get_mut(id.index())
+            .as_mut()
+    }
+
+    /// Every live widget of type `W` with its id, in slot order. Empty if
+    /// no `W` was ever spawned. Slot order is not tree order.
+    pub fn widgets<W: Widget>(&mut self) -> impl Iterator<Item = (NodeId, &mut W)> {
+        let slots = &self.slots;
+        let widgets = &mut self.widgets;
+        let column = widgets.column_of::<W>();
+        let store = column.and_then(|c| widgets.store_mut::<W>(c));
+        store.into_iter().flat_map(move |store| {
+            let widget_type = column.expect("a store exists only with a column");
+            store.iter_mut().filter_map(move |(index, slot)| {
+                let w = slot.as_mut()?;
+                let id = NodeId::new(slots.generation(index), widget_type, index);
+                Some((id, w))
+            })
+        })
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     /// The node record of an id the caller has already validated.
