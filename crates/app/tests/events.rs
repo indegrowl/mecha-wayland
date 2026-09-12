@@ -288,12 +288,20 @@ fn unhandled_root_stale_and_removed_since_emit_targets_are_skipped() {
     let leaf = app.spawn(app.root(), Leaf);
     let gone = app.spawn(app.root(), CounterBuilder);
     app.remove(gone);
+    // Reuses gone's freed slot; kept alive so its handler count can tell
+    // apart a correctly skipped reused slot from a removed node.
     let late = app.spawn(app.root(), CounterBuilder);
+    let soon = app.spawn(app.root(), CounterBuilder);
 
-    app.emit(Inc, [leaf.id(), app.root(), gone.id(), late.id(), a.id()]);
-    app.remove(late);
+    app.emit(Inc, [leaf.id(), app.root(), gone.id(), soon.id(), a.id()]);
+    app.remove(soon); // live when queued, stale by the time flush runs
     app.flush();
     assert_eq!(count(&app, a), 1);
+    assert_eq!(
+        count(&app, late),
+        0,
+        "gone's stale id names late's slot but must not run late's handler"
+    );
 }
 
 #[test]
@@ -362,6 +370,31 @@ fn a_parent_can_handle_events_on_its_child_with_itself_as_me() {
     assert_eq!(app.widget::<Row>(row).unwrap().0, 10);
     // The child's own handler ran first: it was registered first.
     assert_eq!(take_log(), ["row sees child at 1"]);
+}
+
+#[test]
+#[should_panic(expected = "a handler's owner is live and holds its widget")]
+fn me_panics_if_the_handler_removed_its_own_owner() {
+    struct SelfDestruct;
+    struct SelfDestructBuilder;
+    impl Build for SelfDestructBuilder {
+        type Widget = SelfDestruct;
+    }
+    impl Widget for SelfDestruct {
+        type Builder = SelfDestructBuilder;
+        fn build(_b: SelfDestructBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Inc>(me, |ctx, _| {
+                let handle = ctx.handle();
+                ctx.remove(handle);
+                ctx.me();
+            });
+            SelfDestruct
+        }
+    }
+    let mut app = App::new();
+    let d = app.spawn(app.root(), SelfDestructBuilder);
+    app.emit(Inc, d);
+    app.flush();
 }
 
 #[test]

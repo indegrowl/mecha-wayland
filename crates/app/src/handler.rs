@@ -156,6 +156,11 @@ pub(crate) fn dispatch<E: Event>(app: &mut App, event: &E, targets: &[NodeId]) {
 /// same slot during the call after the taken ones, and does nothing if
 /// the target is no longer live: removed, or removed and its slot reused
 /// by a node that must not inherit the list.
+///
+/// Runs on the unwind path when a handler panics, so `drop` must not
+/// itself be able to panic: every lookup here is non-panicking, and a
+/// missing column or an out-of-range slot is treated the same as a dead
+/// target, dropping the taken handlers instead of restoring them.
 struct Restore<'a, E: Event> {
     app: &'a mut App,
     target: NodeId,
@@ -167,12 +172,12 @@ impl<E: Event> Drop for Restore<'_, E> {
         if !self.app.is_live(self.target) {
             return;
         }
-        let column = self
-            .app
-            .handlers
-            .column_of::<E>()
-            .expect("the column the list was taken from");
-        let slot = column.get_mut(self.target.index());
+        let Some(column) = self.app.handlers.column_of::<E>() else {
+            return;
+        };
+        let Some(slot) = column.get_mut_checked(self.target.index()) else {
+            return;
+        };
         let added = std::mem::take(slot);
         let mut list = std::mem::take(&mut self.handlers);
         list.0.extend(added.0);

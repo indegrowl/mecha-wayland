@@ -39,6 +39,12 @@
 //! Everything at run time skips and continues: a stale event target, a
 //! signal with no systems, a handler whose owner is gone.
 //!
+//! The one run-time panic is [`Context::me`]: it panics if a handler
+//! removed its own owner, or an ancestor of it, earlier in the same call.
+//! [`App::remove`] runs immediately, so that is a caller bug, not queued
+//! work; a handler whose owner was already removed before it runs is
+//! skipped instead, never called.
+//!
 //! Component calls add four more caller-bug panics: registering a type
 //! twice, using a type that was never registered, indexing a view with a
 //! stale id, and a query that names one type twice with a `&mut`.

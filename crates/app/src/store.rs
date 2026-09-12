@@ -33,6 +33,13 @@ impl<T: Default> Store<T> {
         &mut self.slots[index as usize]
     }
 
+    /// `None` if `index` is out of range, instead of panicking. For a
+    /// caller that cannot trust the index was grown to, such as a drop
+    /// impl that must not panic during unwinding.
+    pub fn get_mut_checked(&mut self, index: u64) -> Option<&mut T> {
+        self.slots.get_mut(index as usize)
+    }
+
     pub fn set(&mut self, index: u64, value: T) {
         self.slots[index as usize] = value;
     }
@@ -103,6 +110,15 @@ mod tests {
         store.set(2, 7);
         store.grow(1);
         assert_eq!(*store.get(2), 7, "growing smaller changes nothing");
+    }
+
+    #[test]
+    fn get_mut_checked_is_none_out_of_range() {
+        let mut store = Store::<u8>::new();
+        store.grow(2);
+        *store.get_mut_checked(1).unwrap() = 9;
+        assert_eq!(*store.get(1), 9);
+        assert!(store.get_mut_checked(2).is_none());
     }
 
     #[test]

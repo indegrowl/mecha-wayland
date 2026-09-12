@@ -101,7 +101,8 @@ impl App {
     /// with a handle to the node and can read those values through
     /// [`Spawner::component`], then the widget is stored. So `children(parent)`
     /// already lists the node during its build, and a lookup of the node's
-    /// own widget during its build is `None`.
+    /// own widget during its build is `None`. Queues a [`Spawned`] signal
+    /// once the widget is stored.
     ///
     /// `bundle` is `()` or a tuple of one to six components; see [`Bundle`].
     ///
@@ -152,7 +153,8 @@ impl App {
     }
 
     /// Remove `id` and every node under it. Every id in the subtree is
-    /// stale afterwards and its slots go back to the free list.
+    /// stale afterwards and its slots go back to the free list. Queues a
+    /// [`Removed`] signal for `id` before the node is freed.
     ///
     /// Returns `false`, changing nothing, if `id` is already stale:
     /// removing a subtree twice is legitimate once queued work exists.
@@ -395,7 +397,9 @@ impl App {
     /// Queue `event` for the handlers of every node in `targets`, in that
     /// order. Nothing runs until [`App::flush`]. A target that is stale
     /// by then is skipped; a node with no handler for `E` costs one
-    /// liveness check.
+    /// liveness check. Every emit is followed by an [`Emitted<E>`] signal
+    /// carrying the event and its targets, if any system is registered for
+    /// it.
     pub fn emit<E: Event>(&mut self, event: E, targets: impl Into<Targets>) {
         let targets = targets.into();
         self.events.push_back(Box::new(move |app: &mut App| {
