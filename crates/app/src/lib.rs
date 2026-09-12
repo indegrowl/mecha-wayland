@@ -4,5 +4,6 @@
 
 mod id;
 mod slots;
+mod store;
 
 pub use id::{Handle, NodeId};
