@@ -1,6 +1,6 @@
 use crate::component::{Component, Components};
 use crate::nodes::{Node, Nodes};
-use crate::query::CompMut;
+use crate::query::{Columns, CompMut, Query};
 use crate::slots::Slots;
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
@@ -264,6 +264,26 @@ impl App {
     pub fn take_changed<C: Component>(&mut self) -> impl Iterator<Item = NodeId> + '_ {
         let slots = &self.slots;
         self.components.column_mut::<C>().take_changed(slots)
+    }
+
+    /// Fetch one or more columns as views: `&C` for a
+    /// [`Comps`](crate::Comps), `&mut C` for a
+    /// [`CompsMut`](crate::CompsMut), or a tuple of up to six of those.
+    ///
+    /// ```ignore
+    /// let (style, mut rect) = app.components::<(&Style, &mut Rect)>();
+    /// ```
+    ///
+    /// Takes `&mut self` even for a read-only query, since one signature
+    /// covers both, so the views hold the app exclusively while they live.
+    /// Cost per column: one hash and one downcast. Nothing per node.
+    ///
+    /// # Panics
+    ///
+    /// If a named type is not registered, or one type appears twice with
+    /// at least one `&mut`. `(&A, &A)` is fine.
+    pub fn components<Q: Query>(&mut self) -> Q::Out<'_> {
+        Q::fetch(Columns::new(&self.slots, &mut self.components))
     }
 
     // ── internals ────────────────────────────────────────────────────────

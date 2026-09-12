@@ -79,10 +79,13 @@ mod widgets;
 pub use app::{App, Spawner};
 pub use component::Component;
 pub use id::{Handle, NodeId};
-pub use query::CompMut;
+pub use query::{Columns, CompMut, Comps, CompsMut, Query};
 pub use tree::Tree;
 pub use widgets::{Build, Widget};
 
 pub mod prelude {
-    pub use crate::{App, Build, Component, Handle, NodeId, Spawner, Tree, Widget};
+    pub use crate::{
+        App, Build, Columns, CompMut, Component, Comps, CompsMut, Handle, NodeId, Query, Spawner,
+        Tree, Widget,
+    };
 }

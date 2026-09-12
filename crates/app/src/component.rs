@@ -89,6 +89,25 @@ impl<C: Component> Column<C> {
         ))
     }
 
+    /// Live slots only, in slot order, each as a write guard. The guards
+    /// may coexist: every item owns its own value and bit, and they share
+    /// the changed list through its `Cell`.
+    pub fn iter_mut<'a>(
+        &'a mut self,
+        slots: &'a Slots,
+    ) -> impl Iterator<Item = (NodeId, CompMut<'a, C>)> + 'a {
+        let list = &self.list;
+        self.values
+            .as_mut_slice()
+            .iter_mut()
+            .zip(self.changed.as_mut_slice().iter_mut())
+            .enumerate()
+            .filter_map(move |(index, (value, bit))| {
+                let id = slots.id(index as u64)?;
+                Some((id, CompMut::new(id, value, bit, list)))
+            })
+    }
+
     /// Drain the changed list. See [`Changed`].
     pub fn take_changed<'a>(&'a mut self, slots: &'a Slots) -> Changed<'a> {
         Changed {

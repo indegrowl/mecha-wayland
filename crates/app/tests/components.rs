@@ -21,6 +21,20 @@ impl Component for Size {}
 struct Never;
 impl Component for Never {}
 
+/// Four more types, so a six-column query has six distinct columns.
+#[derive(Default, Debug, PartialEq)]
+struct Tag1(u8);
+impl Component for Tag1 {}
+#[derive(Default, Debug, PartialEq)]
+struct Tag2(u8);
+impl Component for Tag2 {}
+#[derive(Default, Debug, PartialEq)]
+struct Tag3(u8);
+impl Component for Tag3 {}
+#[derive(Default, Debug, PartialEq)]
+struct Tag4(u8);
+impl Component for Tag4 {}
+
 /// A widget with nothing in it.
 struct Leaf;
 impl Build for Leaf {
@@ -246,4 +260,161 @@ fn component_mut_of_a_stale_id_is_none() {
 fn draining_an_unregistered_type_panics() {
     let mut app = app();
     let _ = app.take_changed::<Never>().count();
+}
+
+// ── views and queries ───────────────────────────────────────────────────
+
+#[test]
+fn a_shared_view_reads_and_indexes() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let gone = app.spawn(app.root(), Leaf);
+    app.remove(gone);
+    app.component_mut::<Pos>(a).unwrap().x = 1;
+
+    let pos = app.components::<&Pos>();
+    assert_eq!(pos.get(a), Some(&Pos { x: 1, y: 0 }));
+    assert_eq!(pos[a].x, 1);
+    assert_eq!(pos.get(gone), None);
+}
+
+#[test]
+#[should_panic(expected = "stale id")]
+fn indexing_a_stale_id_panics() {
+    let mut app = app();
+    let gone = app.spawn(app.root(), Leaf);
+    app.remove(gone);
+    let pos = app.components::<&Pos>();
+    let _ = pos[gone];
+}
+
+#[test]
+fn iteration_visits_live_nodes_in_slot_order_and_skips_dead_ones() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let b = app.spawn(app.root(), Leaf);
+    let c = app.spawn(app.root(), Leaf);
+    app.remove(b);
+    let ids: Vec<NodeId> = app.components::<&Pos>().iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, vec![app.root(), a.id(), c.id()]);
+    let ids: Vec<NodeId> = app
+        .components::<&mut Pos>()
+        .iter_mut()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, vec![app.root(), a.id(), c.id()]);
+}
+
+#[test]
+fn iter_mut_guards_coexist_and_flag_only_what_was_written_in_write_order() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let _b = app.spawn(app.root(), Leaf);
+    let c = app.spawn(app.root(), Leaf);
+    {
+        let mut pos = app.components::<&mut Pos>();
+        // Slot order: root, a, b, c. Hold every guard at once.
+        let mut guards: Vec<_> = pos.iter_mut().map(|(_, guard)| guard).collect();
+        guards[3].x = 1; // c
+        guards[1].x = 2; // a
+        let _read = guards[2].x; // b: a read does not flag
+    }
+    assert_eq!(app.component::<Pos>(a), Some(&Pos { x: 2, y: 0 }));
+    assert_eq!(
+        app.take_changed::<Pos>().collect::<Vec<_>>(),
+        vec![c.id(), a.id()]
+    );
+}
+
+#[test]
+fn get_mut_on_a_mutable_view_flags() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let gone = app.spawn(app.root(), Leaf);
+    app.remove(gone);
+    {
+        let mut pos = app.components::<&mut Pos>();
+        pos.get_mut(a).unwrap().y = 7;
+        assert_eq!(pos.get(a), Some(&Pos { x: 0, y: 7 }));
+        assert_eq!(pos[a].y, 7);
+        assert!(pos.get_mut(gone).is_none(), "stale id");
+    }
+    assert_eq!(app.take_changed::<Pos>().collect::<Vec<_>>(), vec![a.id()]);
+}
+
+#[test]
+fn a_shared_and_a_mutable_column_are_usable_together() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let b = app.spawn(app.root(), Leaf);
+    app.component_mut::<Pos>(a).unwrap().x = 10;
+    app.component_mut::<Pos>(b).unwrap().x = 20;
+    let _ = app.take_changed::<Pos>().count();
+    {
+        let (pos, mut size) = app.components::<(&Pos, &mut Size)>();
+        for (id, mut s) in size.iter_mut() {
+            s.w = pos[id].x as u32 + 1;
+        }
+    }
+    assert_eq!(app.component::<Size>(a), Some(&Size { w: 11, h: 0 }));
+    assert_eq!(app.component::<Size>(b), Some(&Size { w: 21, h: 0 }));
+    assert_eq!(
+        app.take_changed::<Size>().collect::<Vec<_>>(),
+        vec![app.root(), a.id(), b.id()]
+    );
+    assert_eq!(app.take_changed::<Pos>().count(), 0, "reads do not flag");
+}
+
+#[test]
+fn the_same_column_twice_shared_is_fine() {
+    let mut app = app();
+    let a = app.spawn(app.root(), Leaf);
+    let (first, second) = app.components::<(&Pos, &Pos)>();
+    assert_eq!(first.get(a), second.get(a));
+}
+
+#[test]
+#[should_panic(expected = "same component twice")]
+fn the_same_column_shared_and_mutable_panics() {
+    let mut app = app();
+    let _ = app.components::<(&mut Pos, &Pos)>();
+}
+
+#[test]
+#[should_panic(expected = "same component twice")]
+fn the_same_column_twice_mutably_panics() {
+    let mut app = app();
+    let _ = app.components::<(&Size, &mut Pos, &mut Pos)>();
+}
+
+#[test]
+fn a_six_column_query_resolves_in_any_order() {
+    let mut app = app();
+    app.register_component::<Tag1>();
+    app.register_component::<Tag2>();
+    app.register_component::<Tag3>();
+    app.register_component::<Tag4>();
+    let a = app.spawn(app.root(), Leaf);
+    {
+        // Deliberately not in registration order.
+        let (t4, mut size, t1, mut t3, pos, mut t2) =
+            app.components::<(&Tag4, &mut Size, &Tag1, &mut Tag3, &Pos, &mut Tag2)>();
+        size.get_mut(a).unwrap().h = 1;
+        t3.get_mut(a).unwrap().0 = 3;
+        t2.get_mut(a).unwrap().0 = 2;
+        assert_eq!(t4[a], Tag4(0));
+        assert_eq!(t1[a], Tag1(0));
+        assert_eq!(pos[a], Pos::default());
+    }
+    assert_eq!(app.component::<Size>(a), Some(&Size { w: 0, h: 1 }));
+    assert_eq!(app.component::<Tag3>(a), Some(&Tag3(3)));
+    assert_eq!(app.component::<Tag2>(a), Some(&Tag2(2)));
+    assert_eq!(app.take_changed::<Tag2>().collect::<Vec<_>>(), vec![a.id()]);
+}
+
+#[test]
+#[should_panic(expected = "not registered")]
+fn querying_an_unregistered_type_panics() {
+    let mut app = app();
+    let _ = app.components::<(&Pos, &mut Never)>();
 }
