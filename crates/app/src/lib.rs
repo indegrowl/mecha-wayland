@@ -3,5 +3,6 @@
 //! Crate documentation is completed in the last task of the plan.
 
 mod id;
+mod slots;
 
 pub use id::{Handle, NodeId};
