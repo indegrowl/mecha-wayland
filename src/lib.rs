@@ -1,35 +1,5 @@
 //! The `mecha-wayland` facade: one crate to depend on, one prelude to import.
-//! Each member crate is re-exported by name, and its prelude is folded into
-//! [`prelude`].
-//!
-//! A windowed app installs, in this order: `RingModule`, `WaylandModule`,
-//! `LayoutModule`, `PaintModule`, `WindowModule`, `InteractivityModule`,
-//! `PresentationModule`, `RenderModule`. Each builds on the ones before it;
-//! `examples/counter.rs` is the shape of it.
+//! Member crates are re-exported here as each is rewritten against the new
+//! `app` core.
 
-pub use app;
-pub use assets;
-pub use interactivity;
-pub use layout;
-pub use paint;
-pub use presentation;
-pub use renderer;
-pub use ring;
-pub use utils;
-pub use wayland;
-pub use widgets;
-pub use window;
-
-pub mod prelude {
-    pub use app::prelude::*;
-    pub use interactivity::prelude::*;
-    pub use layout::prelude::*;
-    pub use paint::prelude::*;
-    pub use presentation::prelude::*;
-    pub use renderer::prelude::*;
-    pub use ring::prelude::*;
-    pub use utils::prelude::*;
-    pub use wayland::prelude::*;
-    pub use widgets::prelude::*;
-    pub use window::prelude::*;
-}
+pub mod prelude {}

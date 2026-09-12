@@ -1,8 +1,0 @@
-# The examples' atlas: Inter at the two sizes the counter uses.
-[[atlas]]
-name = "counter"
-
-[[atlas.font]]
-name = "inter"
-path = "../assets/Inter-Regular.ttf"
-sizes = [28, 64]

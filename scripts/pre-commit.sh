@@ -1,28 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FAILED=0
-
 echo "[pre-commit] Checking formatting."
-
-cargo fmt --all --check || FAILED=1
-cargo fmt --all --check --manifest-path compositor/Cargo.toml || FAILED=1
-cargo fmt --all --check --manifest-path launcher/Cargo.toml || FAILED=1
-
-if [[ $FAILED -ne 0 ]]; then
+if ! cargo fmt --all --check; then
     echo ""
     echo "[pre-commit] Formatting issues found. Run 'just fmt' to fix them."
     exit 1
 fi
 
-echo "[pre-commit] Checking build."
-
-cargo check --workspace || FAILED=1
-cargo check --manifest-path compositor/Cargo.toml || FAILED=1
-cargo check --manifest-path launcher/Cargo.toml || FAILED=1
-
-if [[ $FAILED -ne 0 ]]; then
+echo "[pre-commit] Running tests."
+if ! cargo test --workspace; then
     echo ""
-    echo "[pre-commit] Compilation failed"
+    echo "[pre-commit] Tests failed."
     exit 1
 fi

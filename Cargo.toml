@@ -1,79 +1,15 @@
+# The `mecha-wayland` facade crate and workspace root. Crates are added to
+# `members` as they are rewritten against the new `app` core.
 [package]
 name = "mecha-wayland"
 version = "0.1.0"
 edition = "2024"
-build = "build.rs"
 
 [dependencies]
-app.workspace = true
-assets.workspace = true
-interactivity.workspace = true
-layout.workspace = true
-paint.workspace = true
-presentation.workspace = true
-renderer.workspace = true
-ring.workspace = true
-utils.workspace = true
-wayland.workspace = true
-widgets.workspace = true
-window.workspace = true
 
-# The examples' atlas is packed at build time from `examples/atlas.toml`.
-[build-dependencies]
-assets = { workspace = true, features = ["builder"] }
-
-# Only the new core and the modules rewritten against it are in the
-# workspace. The other directories under `crates/` are the previous stack,
-# parked until each is rewritten against `app`.
 [workspace]
-members = [
-    "crates/app",
-    "crates/assets",
-    "crates/interactivity",
-    "crates/layout",
-    "crates/paint",
-    "crates/presentation",
-    "crates/renderer",
-    "crates/ring",
-    "crates/utils",
-    "crates/wayland",
-    "crates/widgets",
-    "crates/window",
-]
-resolver = "2"
-
-[workspace.dependencies]
-app = { path = "crates/app" }
-assets = { path = "crates/assets" }
-interactivity = { path = "crates/interactivity" }
-layout = { path = "crates/layout" }
-paint = { path = "crates/paint" }
-presentation = { path = "crates/presentation" }
-renderer = { path = "crates/renderer" }
-ring = { path = "crates/ring" }
-utils = { path = "crates/utils" }
-wayland = { path = "crates/wayland" }
-widgets = { path = "crates/widgets" }
-window = { path = "crates/window" }
-
-anyhow = "1"
-bitflags = "2"
-bytemuck = { version = "1.25.2", features = ["derive"] }
-glam = { version = "0.29", features = ["bytemuck"] }
-glow = "0.17"
-io-uring = "0.7"
-khronos-egl = { version = "6", features = ["dynamic"] }
-libc = "0.2"
-png = "0.18"
-taffy = { version = "0.10.1", default-features = false, features = ["std", "flexbox", "block_layout"] }
-tracing = "0.1"
-# codegen (build-dep only)
-prettyplease = "0.2.37"
-proc-macro2 = "1.0"
-quick-xml = { version = "0.39", features = ["serialize"] }
-quote = "1.0.45"
-serde = { version = "1", features = ["derive"] }
-syn = "2.0.117"
+members = []
+resolver = "3"
 
 [profile.dev]
 debug = 1
