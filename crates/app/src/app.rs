@@ -17,15 +17,15 @@ use crate::{Build, Bundle, Event, Handle, Module, NodeId, Signal, Widget};
 pub(crate) type Job = Box<dyn FnOnce(&mut App)>;
 
 /// The runtime: a tree of nodes, each backed by a widget stored in a
-/// per-type column.
+/// per-type column, plus the systems, handlers and queues that drive it.
 ///
-/// Four arenas share one slot index. `slots` is the only validator;
-/// `nodes`, `widgets`, and `components` trust the index they are given. The tree is never
-/// empty: [`App::new`] creates the root, which is its own parent and
-/// cannot be removed.
+/// Five arenas share one slot index: `slots`, `nodes`, `widgets`,
+/// `components` and `handlers`. `slots` is the only validator; the rest
+/// trust the index they are given. The tree is never empty: [`App::new`]
+/// creates the root, which is its own parent and cannot be removed.
 ///
-/// Messages are queued, never run inline: [`App::signal`] and `App::emit`
-/// push jobs, [`App::flush`] runs them.
+/// Messages are queued, never run inline: [`App::signal`] and
+/// [`App::emit`] push jobs, [`App::flush`] runs them.
 pub struct App {
     slots: Slots,
     nodes: Nodes,

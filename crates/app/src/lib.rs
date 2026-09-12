@@ -15,13 +15,29 @@
 //!   stored, with a [`Spawner`] that attaches children under it.
 //! - A [`Build`] is the marker a builder implements so that
 //!   [`App::spawn`] can infer the widget type from the builder.
+//! - A [`Component`] is per-node data outside the widget, one value of
+//!   every registered type on every node, written through a guard that
+//!   records the node as changed.
+//! - A [`Signal`] is an app-wide message; a [`System`] is a plain function
+//!   run for every signal of its type. An [`Event`] is a node-level
+//!   message sent to a list of nodes; a handler is a closure a widget's
+//!   build attached with [`Spawner::on`], run with a [`Context`] over its
+//!   owner. Every emit is followed by an [`Emitted`] signal.
+//! - Nothing runs when a message is sent. [`App::flush`] drains every
+//!   event, runs one signal, and repeats. [`App::tick`] sends [`Tick`] and
+//!   [`PostTick`] and flushes; [`App::run`] hands the app to the runner.
+//! - A [`Module`] installs components, systems and the runner.
+//!   [`OnChanged`] events come from the `PostTick` drain each
+//!   registration installs.
 //!
 //! # Failure
 //!
 //! Reads return `None` for a stale id or a wrong widget type.
-//! [`App::remove`] returns `false` for a stale id. Two tree calls panic:
-//! spawning under a dead parent and removing the root. Both are caller
-//! bugs, not states to recover from.
+//! [`App::remove`] returns `false` for a stale id. Panics are setup bugs:
+//! spawning under a dead parent, removing the root, a handler on a stale
+//! target, a second runner, a component registered twice or never.
+//! Everything at run time skips and continues: a stale event target, a
+//! signal with no systems, a handler whose owner is gone.
 //!
 //! Component calls add four more caller-bug panics: registering a type
 //! twice, using a type that was never registered, indexing a view with a
@@ -111,6 +127,39 @@
 //! assert!(app.remove(row));
 //! assert!(app.widget::<Counter>(first).is_none());
 //! assert_eq!(app.widgets::<Counter>().count(), 0);
+//! ```
+//!
+//! # Messages
+//!
+//! ```
+//! use app::prelude::*;
+//!
+//! struct Click;
+//! impl Event for Click {}
+//!
+//! struct Button(u32);
+//! struct ButtonBuilder;
+//! impl Build for ButtonBuilder { type Widget = Button; }
+//! impl Widget for Button {
+//!     type Builder = ButtonBuilder;
+//!     fn build(_: ButtonBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+//!         s.on::<Click>(me, |ctx, _| ctx.me().0 += 1);
+//!         Button(0)
+//!     }
+//! }
+//!
+//! fn count_clicks(app: &mut App, e: &Emitted<Click>) {
+//!     let total: u32 = e.targets.iter().map(|&id| app.widget::<Button>(id).unwrap().0).sum();
+//!     assert_eq!(total, 1);
+//! }
+//!
+//! let mut app = App::new();
+//! app.system(count_clicks);
+//! let button = app.spawn(app.root(), ButtonBuilder);
+//! app.emit(Click, button);
+//! assert_eq!(app.widget::<Button>(button).unwrap().0, 0, "queued, not run");
+//! app.flush();
+//! assert_eq!(app.widget::<Button>(button).unwrap().0, 1);
 //! ```
 
 mod app;

@@ -122,6 +122,11 @@ impl HandlerColumns {
 /// Run every handler for `(target, E)`, for each target in order. A
 /// stale target is skipped. Nothing at all happens if no `on::<E>` ever
 /// ran.
+///
+/// A target's liveness is checked once, before its handler list is taken:
+/// if a handler removes the target, the later handlers in the same list
+/// still run, seeing a stale `target`. The owner check, by contrast, is
+/// per handler.
 pub(crate) fn dispatch<E: Event>(app: &mut App, event: &E, targets: &[NodeId]) {
     for &target in targets {
         if !app.is_live(target) {

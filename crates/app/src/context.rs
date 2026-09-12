@@ -14,6 +14,10 @@ use crate::{App, Component, Handle, NodeId, Widget};
 /// remove, and read any widget or column. All of that only queues or
 /// touches other nodes; the owner's own handler list is out of its slot
 /// while it runs, so nothing here can alias it.
+///
+/// Because `Context` derefs to `App`, a handler may also call
+/// [`App::flush`]: a nested flush skips the running target's handlers for
+/// the same event, since that list is out of its slot while it runs.
 pub struct Context<'a, W: Widget> {
     app: &'a mut App,
     me: Handle<W>,
@@ -28,6 +32,12 @@ impl<'a, W: Widget> Context<'a, W> {
 
     /// The owner's widget. Always present: a handler runs only while its
     /// owner is live, and the handle proves the widget type.
+    ///
+    /// # Panics
+    ///
+    /// If a handler removes its own owner and then calls `me`: for
+    /// example `ctx.remove(ctx.handle())`, or removing an ancestor of the
+    /// owner.
     #[inline]
     pub fn me(&mut self) -> &mut W {
         self.app
