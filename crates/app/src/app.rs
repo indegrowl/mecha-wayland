@@ -29,9 +29,10 @@ impl App {
             nodes: Nodes::new(),
             widgets: Widgets::new(),
         };
-        let (index, generation) = app.slots.alloc();
+        let column = app.widgets.column::<Root>(0);
+        let (index, generation) = app.slots.alloc(column);
         let len = app.slots.len();
-        let column = app.widgets.column::<Root>(len);
+        app.widgets.grow(len);
         let id = NodeId::new(generation, column, index);
         debug_assert_eq!(id, NodeId::ROOT);
         app.nodes.grow(len);
@@ -68,9 +69,9 @@ impl App {
             self.slots.is_live(parent),
             "spawn under a stale parent: {parent:?}"
         );
-        let (index, generation) = self.slots.alloc();
+        let widget_type = self.widgets.column::<B::Widget>(self.slots.len());
+        let (index, generation) = self.slots.alloc(widget_type);
         let len = self.slots.len();
-        let widget_type = self.widgets.column::<B::Widget>(len);
         self.widgets.grow(len);
         self.nodes.grow(len);
 
