@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::component::{Component, Components};
+use crate::handler::HandlerColumns;
 use crate::message::{Removed, Spawned};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
@@ -30,6 +31,7 @@ pub struct App {
     widgets: Widgets,
     components: Components,
     systems: Systems,
+    handlers: HandlerColumns,
     /// Events wait here. Drained before every signal.
     events: VecDeque<Job>,
     /// Signals wait here. One runs per round of `flush`.
@@ -50,6 +52,7 @@ impl App {
             widgets: Widgets::new(),
             components: Components::new(),
             systems: Systems::new(),
+            handlers: HandlerColumns::new(),
             events: VecDeque::new(),
             signals: VecDeque::new(),
         };
@@ -117,6 +120,7 @@ impl App {
         self.widgets.grow(len);
         self.nodes.grow(len);
         self.components.grow(len);
+        self.handlers.grow(len);
 
         let id = NodeId::new(generation, widget_type, index);
         self.nodes.set(index, Node::new(parent));
@@ -175,6 +179,7 @@ impl App {
             self.slots.free(current.index());
             self.widgets.free(current.widget_type(), current.index());
             self.components.free(current.index());
+            self.handlers.free(current.index());
             let node = self.nodes.take(current.index());
             pending.extend(node.children);
         }
@@ -495,6 +500,26 @@ mod tests {
         assert_eq!(new.generation(), old.generation() + 1);
         assert!(app.is_live(new));
         assert!(!app.is_live(old));
+    }
+
+    #[test]
+    fn spawn_grows_and_remove_frees_the_handler_columns() {
+        struct Poke;
+        impl crate::Event for Poke {}
+
+        let mut app = App::new();
+        let len = app.slots.len();
+        app.handlers.column_mut::<Poke>(len);
+        let id = app.spawn(app.root(), Leaf).id();
+        let column = app.handlers.column_of::<Poke>().unwrap();
+        column.get_mut(id.index()).0.push(Box::new(|_, _, _| {}));
+        assert_eq!(column.get(id.index()).0.len(), 1, "spawn grew the column");
+        app.remove(id);
+        let column = app.handlers.column_of::<Poke>().unwrap();
+        assert!(
+            column.get(id.index()).0.is_empty(),
+            "remove emptied the slot"
+        );
     }
 
     #[test]
