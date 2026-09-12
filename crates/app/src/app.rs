@@ -1,3 +1,4 @@
+use crate::component::{Component, Components};
 use crate::nodes::{Node, Nodes};
 use crate::slots::Slots;
 use crate::tree::Tree;
@@ -7,14 +8,15 @@ use crate::{Build, Handle, NodeId, Widget};
 /// The runtime: a tree of nodes, each backed by a widget stored in a
 /// per-type column.
 ///
-/// Three arenas share one slot index. `slots` is the only validator;
-/// `nodes` and `widgets` trust the index they are given. The tree is never
+/// Four arenas share one slot index. `slots` is the only validator;
+/// `nodes`, `widgets`, and `components` trust the index they are given. The tree is never
 /// empty: [`App::new`] creates the root, which is its own parent and
 /// cannot be removed.
 pub struct App {
     slots: Slots,
     nodes: Nodes,
     widgets: Widgets,
+    components: Components,
 }
 
 impl Default for App {
@@ -29,6 +31,7 @@ impl App {
             slots: Slots::new(),
             nodes: Nodes::new(),
             widgets: Widgets::new(),
+            components: Components::new(),
         };
         let column = app.widgets.column::<Root>(0);
         let (index, generation) = app.slots.alloc(column);
@@ -75,6 +78,7 @@ impl App {
         let len = self.slots.len();
         self.widgets.grow(len);
         self.nodes.grow(len);
+        self.components.grow(len);
 
         let id = NodeId::new(generation, widget_type, index);
         self.nodes.set(index, Node::new(parent));
@@ -121,6 +125,7 @@ impl App {
         while let Some(current) = pending.pop() {
             self.slots.free(current.index());
             self.widgets.free(current.widget_type(), current.index());
+            self.components.free(current.index());
             let node = self.nodes.take(current.index());
             pending.extend(node.children);
         }
@@ -207,6 +212,31 @@ impl App {
                 Some((id, w))
             })
         })
+    }
+
+    // ── components ───────────────────────────────────────────────────────
+
+    /// Allocate a column for `C`. Every live node, the root included,
+    /// holds `C::default()` from here on, and so does every node spawned
+    /// later.
+    ///
+    /// # Panics
+    ///
+    /// If `C` is already registered.
+    pub fn register_component<C: Component>(&mut self) {
+        self.components.register::<C>(self.slots.len());
+    }
+
+    /// One node's `C`. `None` if `id` is stale.
+    ///
+    /// Pays the column lookup on every call; a pass over many nodes takes
+    /// a view through [`App::components`] once instead.
+    ///
+    /// # Panics
+    ///
+    /// If `C` is not registered.
+    pub fn component<C: Component>(&self, id: impl Into<NodeId>) -> Option<&C> {
+        self.components.column::<C>().get(&self.slots, id.into())
     }
 
     // ── internals ────────────────────────────────────────────────────────

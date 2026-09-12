@@ -82,5 +82,5 @@ pub use tree::Tree;
 pub use widgets::{Build, Widget};
 
 pub mod prelude {
-    pub use crate::{App, Build, Handle, NodeId, Spawner, Tree, Widget};
+    pub use crate::{App, Build, Component, Handle, NodeId, Spawner, Tree, Widget};
 }
