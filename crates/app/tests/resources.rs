@@ -155,3 +155,111 @@ fn set_if_neq_flags_only_on_a_difference() {
     assert!(app.take_resource_changed::<Score>());
     assert_eq!(app.resource::<Score>(), &Score(2));
 }
+
+// ── OnChanged<R> ────────────────────────────────────────────────────────
+
+fn on_score(app: &mut App, _: &OnChanged<Score>) {
+    log(format!("score {}", app.resource::<Score>().0));
+}
+
+#[test]
+fn an_insert_fires_on_the_next_tick_and_an_init_does_not() {
+    let mut app = App::new();
+    app.system(on_score);
+    app.insert_resource(Score(3));
+    app.tick();
+    assert_eq!(take_log(), ["score 3"]);
+    app.tick();
+    assert!(take_log().is_empty());
+
+    let mut app = App::new();
+    app.system(on_score);
+    app.init_resource::<Score>();
+    app.tick();
+    assert!(take_log().is_empty());
+}
+
+#[test]
+fn a_write_fires_once_per_tick_and_a_read_does_not() {
+    let mut app = App::new();
+    app.init_resource::<Score>().system(on_score);
+    app.resource_mut::<Score>().0 = 1;
+    app.resource_mut::<Score>().0 = 2;
+    app.tick();
+    assert_eq!(take_log(), ["score 2"], "two writes, one signal");
+    let _ = app.resource::<Score>();
+    app.tick();
+    assert!(take_log().is_empty());
+}
+
+#[test]
+fn a_replace_fires_and_installs_no_second_drain() {
+    let mut app = App::new();
+    app.insert_resource(Score(1));
+    app.system(on_score);
+    app.tick();
+    take_log();
+    app.insert_resource(Score(2));
+    app.tick();
+    assert_eq!(take_log(), ["score 2"], "one drain, one signal");
+}
+
+#[test]
+fn a_write_during_tick_fires_in_the_same_tick() {
+    fn bump(app: &mut App, _: &Tick) {
+        app.resource_mut::<Score>().0 += 1;
+    }
+    let mut app = App::new();
+    app.init_resource::<Score>().system(bump).system(on_score);
+    app.tick();
+    assert_eq!(take_log(), ["score 1"]);
+    app.tick();
+    assert_eq!(take_log(), ["score 2"]);
+}
+
+#[test]
+fn a_signal_with_no_system_is_dropped_and_the_drain_still_clears() {
+    let mut app = App::new();
+    app.insert_resource(Score(1));
+    app.tick();
+    assert!(!app.take_resource_changed::<Score>());
+}
+
+/// Handles `OnChanged<Layout>` on itself: logs, and writes `Score`.
+struct Echo;
+struct EchoBuilder;
+impl Build for EchoBuilder {
+    type Widget = Echo;
+}
+impl Widget for Echo {
+    type Builder = EchoBuilder;
+    fn build(_b: EchoBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        s.on::<OnChanged<Layout>>(me, |ctx, _| {
+            let l = ctx.component::<Layout>().unwrap().0;
+            log(format!("handler layout {l}"));
+            ctx.resource_mut::<Score>().0 = 10 + l;
+        });
+        Echo
+    }
+}
+
+#[test]
+fn component_change_handlers_run_before_resource_change_systems() {
+    let mut app = App::new();
+    app.register_component::<Layout>()
+        .init_resource::<Score>()
+        .system(on_score);
+    let e = app.spawn(app.root(), EchoBuilder);
+    app.component_mut::<Layout>(e).unwrap().0 = 1;
+    app.resource_mut::<Score>().0 = 1;
+    app.tick();
+    // The drains ran in PostTick: Layout's emitted an event, Score's
+    // queued a signal. The event ran first, and its handler's write is
+    // what the signal's system then reads.
+    assert_eq!(take_log(), ["handler layout 1", "score 11"]);
+    app.tick();
+    // The handler's write landed after Score's drain, so it fires now.
+    assert_eq!(take_log(), ["score 11"]);
+    app.tick();
+    assert!(take_log().is_empty());
+}

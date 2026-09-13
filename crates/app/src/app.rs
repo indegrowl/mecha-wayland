@@ -381,17 +381,27 @@ impl App {
     /// Store `value` as the app's `R`, replacing and returning what was
     /// there. Every insert counts as a write for
     /// [`OnChanged<R>`](crate::OnChanged), the way a bundle's initial
-    /// component values flag the node.
+    /// component values flag the node. The first insert of `R` also
+    /// installs the [`PostTick`] system that turns the changed record into
+    /// an [`OnChanged<R>`](crate::OnChanged) signal each tick; a replace
+    /// does not install it again, since systems are never removed.
     pub fn insert_resource<R: Resource>(&mut self, value: R) -> Option<R> {
-        self.resources.insert(value)
+        let old = self.resources.insert(value);
+        if old.is_none() {
+            self.system::<PostTick>(drain_resource_changed::<R>);
+        }
+        old
     }
 
     /// Store `R::default()` if no `R` is present, without counting it as a
     /// write, the way a spawn's `Default` does not flag. A no-op if `R` is
     /// present, so a module can call it for a resource an earlier module
-    /// may already have provided.
+    /// may already have provided. Installs the same drain as
+    /// [`App::insert_resource`] when it inserts.
     pub fn init_resource<R: Resource + Default>(&mut self) -> &mut Self {
-        self.resources.init::<R>();
+        if self.resources.init::<R>() {
+            self.system::<PostTick>(drain_resource_changed::<R>);
+        }
         self
     }
 
@@ -570,6 +580,15 @@ fn drain_changed<C: Component>(app: &mut App, _: &PostTick) {
     let ids: Vec<NodeId> = app.take_changed::<C>().collect();
     if !ids.is_empty() {
         app.emit(OnChanged::<C>::new(), ids);
+    }
+}
+
+/// The `PostTick` system behind `OnChanged<R>`: clear the record and, if
+/// it was set, signal once. On `PostTick` for the same reason as
+/// `drain_changed`.
+fn drain_resource_changed<R: Resource>(app: &mut App, _: &PostTick) {
+    if app.take_resource_changed::<R>() {
+        app.signal(OnChanged::<R>::new());
     }
 }
 

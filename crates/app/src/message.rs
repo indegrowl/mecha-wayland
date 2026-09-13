@@ -10,9 +10,9 @@
 
 use std::marker::PhantomData;
 
-use crate::Component;
 use crate::NodeId;
 use crate::handler::Targets;
+use crate::{Component, Resource};
 
 /// An app-wide message consumed by systems.
 ///
@@ -39,8 +39,8 @@ impl Signal for Tick {}
 
 /// The built-in signal [`App::tick`](crate::App::tick) sends after
 /// [`Tick`], once everything `Tick` caused has run. The
-/// [`OnChanged`](crate::OnChanged) drains sit here so a tick's writes
-/// fire in the same tick.
+/// [`OnChanged`](crate::OnChanged) drains sit here, component and
+/// resource alike, so a tick's writes fire in the same tick.
 pub struct PostTick;
 impl Signal for PostTick {}
 
@@ -78,24 +78,44 @@ pub struct Emitted<E: Event> {
 }
 impl<E: Event> Signal for Emitted<E> {}
 
-/// A node's `C` was written since the last tick's drain. Emitted once per
-/// tick, from a `PostTick` system that `register_component::<C>` installs,
-/// to every node `take_changed::<C>()` yields: a node written twice fires
-/// once, a node removed after its write does not fire. A handler is
-/// `s.on::<OnChanged<Rect>>(me, ..)`; a system that wants every changed id
-/// at once registers for `Emitted<OnChanged<Rect>>` and reads `targets`.
-pub struct OnChanged<C: Component>(PhantomData<fn() -> C>);
+/// A `T` was written since the last tick's drain, where `T` is a
+/// component or a resource. A marker either way: the receiver reads the
+/// data itself.
+///
+/// For a component, an *event*: emitted once per tick from a `PostTick`
+/// system that `register_component::<C>` installs, to every node
+/// `take_changed::<C>()` yields. A node written twice fires once; a node
+/// removed after its write does not fire. A handler is
+/// `s.on::<OnChanged<Rect>>(me, ..)`; a system that wants every changed
+/// id at once registers for `Emitted<OnChanged<Rect>>` and reads
+/// `targets`.
+///
+/// For a resource, a *signal*: sent once per tick from a `PostTick`
+/// system that the first `insert_resource::<R>` or the inserting
+/// `init_resource::<R>` installs, if `take_resource_changed::<R>()` was
+/// set. An insert counts as a write; an init does not. A system is
+/// `fn(&mut App, &OnChanged<Windows>)`.
+///
+/// Order within a tick: component drains emit events, resource drains
+/// queue signals, and `flush` runs every queued event before the next
+/// signal. So every `OnChanged<C>` handler of a tick runs before the
+/// first `OnChanged<R>` system, and a resource written by an
+/// `OnChanged<C>` handler fires on the next tick, since its drain
+/// already ran. Drains run in registration order: components in
+/// `register_component` order, resources in first-insert order.
+pub struct OnChanged<T: 'static>(PhantomData<fn() -> T>);
 
-impl<C: Component> OnChanged<C> {
+impl<T: 'static> OnChanged<T> {
     pub fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<C: Component> Default for OnChanged<C> {
+impl<T: 'static> Default for OnChanged<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl<C: Component> Event for OnChanged<C> {}
+impl<R: Resource> Signal for OnChanged<R> {}
