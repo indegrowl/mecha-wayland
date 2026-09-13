@@ -6,11 +6,12 @@ use crate::handler::{Handler, HandlerColumns, Targets, dispatch};
 use crate::message::{Emitted, OnChanged, PostTick, Removed, Spawned, Tick};
 use crate::nodes::{Node, Nodes};
 use crate::query::{Columns, CompMut, Query};
+use crate::resource::{ResourceMut, Resources};
 use crate::slots::Slots;
 use crate::system::{System, Systems};
 use crate::tree::Tree;
 use crate::widgets::{Root, Widgets};
-use crate::{Build, Bundle, Event, Handle, Module, NodeId, Signal, Widget};
+use crate::{Build, Bundle, Event, Handle, Module, NodeId, Resource, Signal, Widget};
 
 /// A queued unit of work: a signal or an event with its dispatch baked
 /// in, so the queue needs no knowledge of the concrete type.
@@ -21,7 +22,8 @@ pub(crate) type Job = Box<dyn FnOnce(&mut App)>;
 ///
 /// Five arenas share one slot index: `slots`, `nodes`, `widgets`,
 /// `components` and `handlers`. `slots` is the only validator; the rest
-/// trust the index they are given. The tree is never empty: [`App::new`]
+/// trust the index they are given. `resources` stands apart: one value
+/// per type, no slot. The tree is never empty: [`App::new`]
 /// creates the root, which is its own parent and cannot be removed.
 ///
 /// Messages are queued, never run inline: [`App::signal`] and
@@ -31,6 +33,9 @@ pub struct App {
     nodes: Nodes,
     widgets: Widgets,
     components: Components,
+    /// One value per inserted type. Not an arena: no slot, nothing per
+    /// node.
+    resources: Resources,
     systems: Systems,
     pub(crate) handlers: HandlerColumns,
     /// Events wait here. Drained before every signal.
@@ -55,6 +60,7 @@ impl App {
             nodes: Nodes::new(),
             widgets: Widgets::new(),
             components: Components::new(),
+            resources: Resources::new(),
             systems: Systems::new(),
             handlers: HandlerColumns::new(),
             events: VecDeque::new(),
@@ -368,6 +374,62 @@ impl App {
             Tree::new(&self.slots, &self.nodes),
             Columns::new(&self.slots, &mut self.components),
         )
+    }
+
+    // ── resources ────────────────────────────────────────────────────────
+
+    /// Store `value` as the app's `R`, replacing and returning what was
+    /// there. Every insert counts as a write for
+    /// [`OnChanged<R>`](crate::OnChanged), the way a bundle's initial
+    /// component values flag the node.
+    pub fn insert_resource<R: Resource>(&mut self, value: R) -> Option<R> {
+        self.resources.insert(value)
+    }
+
+    /// Store `R::default()` if no `R` is present, without counting it as a
+    /// write, the way a spawn's `Default` does not flag. A no-op if `R` is
+    /// present, so a module can call it for a resource an earlier module
+    /// may already have provided.
+    pub fn init_resource<R: Resource + Default>(&mut self) -> &mut Self {
+        self.resources.init::<R>();
+        self
+    }
+
+    /// Whether an `R` is present. One hash; the getters panic instead.
+    pub fn has_resource<R: Resource>(&self) -> bool {
+        self.resources.has::<R>()
+    }
+
+    /// The app's `R`.
+    ///
+    /// # Panics
+    ///
+    /// If no `R` was inserted or initialised: a setup bug, the same class
+    /// as an unregistered component.
+    pub fn resource<R: Resource>(&self) -> &R {
+        self.resources.get::<R>()
+    }
+
+    /// A write guard for the app's `R`. The guard's first `DerefMut`
+    /// records the resource for [`App::take_resource_changed`].
+    ///
+    /// # Panics
+    ///
+    /// If no `R` was inserted or initialised.
+    pub fn resource_mut<R: Resource>(&mut self) -> ResourceMut<'_, R> {
+        self.resources.get_mut::<R>()
+    }
+
+    /// Whether `R` was written since the last call, clearing the record.
+    /// The resource half of [`App::take_changed`]; the
+    /// [`OnChanged<R>`](crate::OnChanged) drain is written in terms of
+    /// it, and a custom runner may drain by hand.
+    ///
+    /// # Panics
+    ///
+    /// If no `R` was inserted or initialised.
+    pub fn take_resource_changed<R: Resource>(&mut self) -> bool {
+        self.resources.take_changed::<R>()
     }
 
     // ── systems and signals ──────────────────────────────────────────────
