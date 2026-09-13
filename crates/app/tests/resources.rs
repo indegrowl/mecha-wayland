@@ -396,3 +396,92 @@ fn data_queries_resources_beside_the_tree() {
     drop((layout, score));
     assert_eq!(data.component::<Layout>(parent), Some(&Layout(3)));
 }
+
+// ── fetch ───────────────────────────────────────────────────────────────
+
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+struct Size(u32);
+impl Component for Size {}
+
+#[test]
+fn fetch_holds_several_guards_on_one_node_at_once() {
+    let mut app = App::new();
+    app.register_component::<Layout>()
+        .register_component::<Size>();
+    app.insert_resource(Score(3));
+    let a = app.spawn(app.root(), Leaf);
+    {
+        let (mut layout, mut size, mut score) =
+            app.fetch::<(&mut Layout, &mut Size, ResMut<Score>)>(a);
+        layout.0 = score.0;
+        size.0 = score.0 * 2;
+        score.0 += 1;
+    }
+    assert_eq!(app.component::<Layout>(a), Some(&Layout(3)));
+    assert_eq!(app.component::<Size>(a), Some(&Size(6)));
+    assert_eq!(app.resource::<Score>(), &Score(4));
+    assert_eq!(
+        app.take_changed::<Layout>().collect::<Vec<_>>(),
+        vec![a.id()]
+    );
+    assert_eq!(app.take_changed::<Size>().collect::<Vec<_>>(), vec![a.id()]);
+}
+
+#[test]
+fn fetch_shared_elements_are_plain_references_and_do_not_flag() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(3));
+    app.take_resource_changed::<Score>();
+    let a = app.spawn(app.root(), Leaf);
+    let (layout, score): (&Layout, &Score) = app.fetch::<(&Layout, Res<Score>)>(a);
+    assert_eq!((layout, score), (&Layout(0), &Score(3)));
+    assert!(app.take_changed::<Layout>().next().is_none());
+    assert!(!app.take_resource_changed::<Score>());
+}
+
+#[test]
+fn a_single_element_fetch_is_the_value_itself() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    let a = app.spawn(app.root(), Leaf);
+    app.fetch::<&mut Layout>(a).0 = 9;
+    assert_eq!(app.fetch::<&Layout>(a), &Layout(9));
+    assert_eq!(
+        app.take_changed::<Layout>().collect::<Vec<_>>(),
+        vec![a.id()]
+    );
+}
+
+#[test]
+#[should_panic(expected = "same place twice")]
+fn fetch_with_a_repeated_mutable_place_panics() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    let root = app.root();
+    let _ = app.fetch::<(&mut Layout, &mut Layout)>(root);
+}
+
+#[test]
+#[should_panic(expected = "stale id")]
+fn fetch_of_a_stale_id_panics() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    let a = app.spawn(app.root(), Leaf);
+    app.remove(a);
+    let _ = app.fetch::<&Layout>(a);
+}
+
+#[test]
+fn data_fetches_beside_the_tree() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(1));
+    let a = app.spawn(app.root(), Leaf);
+    let (tree, mut data) = app.split();
+    let parent = tree.parent(a).unwrap();
+    let (mut layout, score) = data.fetch::<(&mut Layout, Res<Score>)>(parent);
+    layout.0 = score.0;
+    drop((layout, score));
+    assert_eq!(data.component::<Layout>(parent), Some(&Layout(1)));
+}

@@ -378,6 +378,41 @@ impl App {
         ))
     }
 
+    /// [`App::query`] scoped to one node: the same elements, but each
+    /// component element yields `id`'s value (`&C`) or write guard
+    /// ([`CompMut`](crate::CompMut)) instead of a column view; resource
+    /// elements are as in `query`. Everything is borrowed at once, so
+    /// several guards on one node may coexist, which `component_mut`
+    /// cannot offer since each call borrows the whole app.
+    ///
+    /// ```
+    /// # use app::prelude::*;
+    /// # #[derive(Default)]
+    /// # struct Rect;
+    /// # impl Component for Rect {}
+    /// # #[derive(Default)]
+    /// # struct Windows;
+    /// # impl Resource for Windows {}
+    /// # let mut app = App::new();
+    /// # app.register_component::<Rect>();
+    /// # app.init_resource::<Windows>();
+    /// # let id = app.root();
+    /// let (mut rect, windows) = app.fetch::<(&mut Rect, Res<Windows>)>(id);
+    /// # let _ = (&mut rect, windows);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If `id` is stale: the id came from a handle the caller holds, and
+    /// [`App::component_mut`] offers the `Option` form for the doubtful
+    /// case. Also under [`App::query`]'s conditions.
+    pub fn fetch<Q: Query>(&mut self, id: impl Into<NodeId>) -> Q::One<'_> {
+        Q::fetch_one(
+            Data::new(&self.slots, &mut self.components, &mut self.resources),
+            id.into(),
+        )
+    }
+
     /// The tree read-only and the data mutably, at the same time. For a
     /// pass that walks the tree while writing a column or a resource,
     /// such as layout reading `children` and writing a rect.

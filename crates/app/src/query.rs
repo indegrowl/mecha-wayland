@@ -192,6 +192,19 @@ impl<'a> Data<'a> {
         })
     }
 
+    /// The values and guards `Q` names, at one node. See
+    /// [`App::fetch`](crate::App::fetch).
+    pub fn fetch<Q: Query>(&mut self, id: impl Into<NodeId>) -> Q::One<'_> {
+        Q::fetch_one(
+            Data {
+                slots: self.slots,
+                components: &mut *self.components,
+                resources: &mut *self.resources,
+            },
+            id.into(),
+        )
+    }
+
     /// One node's `C`. `None` for a stale id. Panics if `C` is not
     /// registered.
     pub fn component<C: Component>(&self, id: impl Into<NodeId>) -> Option<&C> {
@@ -245,10 +258,17 @@ pub struct ResMut<R: Resource>(PhantomData<fn() -> R>);
 /// else panics, since the type system cannot see that `A` is `A`. A type
 /// that is both a component and a resource is two places.
 pub trait Query: sealed::Sealed {
+    /// The views [`App::query`](crate::App::query) returns.
     type Out<'a>;
+    /// The values and guards [`App::fetch`](crate::App::fetch) returns
+    /// for one node: `&C`, [`CompMut<C>`], `&R`, [`ResourceMut<R>`].
+    type One<'a>;
 
     #[doc(hidden)]
     fn fetch<'a>(data: Data<'a>) -> Self::Out<'a>;
+
+    #[doc(hidden)]
+    fn fetch_one<'a>(data: Data<'a>, id: NodeId) -> Self::One<'a>;
 }
 
 /// Where an element's data lives: a component column by number, or a
@@ -268,6 +288,10 @@ pub trait Element: sealed::Sealed {
     /// Panics if the type is not registered or inserted.
     fn place(data: &Data<'_>) -> Place;
     fn view<'a>(fetched: Fetched<'a>) -> Self::Out<'a>;
+
+    type One<'a>;
+    /// `id` was checked live by the caller.
+    fn one<'a>(fetched: Fetched<'a>, id: NodeId) -> Self::One<'a>;
 }
 
 /// A shared or exclusive borrow of one erased column or entry.
@@ -323,6 +347,20 @@ impl<C: Component> Element for &C {
             .expect("a column holds its registered type");
         Comps { slots, column }
     }
+
+    type One<'a> = &'a C;
+
+    fn one<'a>(fetched: Fetched<'a>, id: NodeId) -> &'a C {
+        let Inner::Column { slots, col } = fetched.inner else {
+            unreachable!("a component element is fetched from a column")
+        };
+        let column = col
+            .shared()
+            .as_any()
+            .downcast_ref::<Column<C>>()
+            .expect("a column holds its registered type");
+        column.get(slots, id).expect("fetch checked the id is live")
+    }
 }
 
 impl<C: Component> sealed::Sealed for &mut C {}
@@ -348,6 +386,25 @@ impl<C: Component> Element for &mut C {
             .expect("a column holds its registered type");
         CompsMut { slots, column }
     }
+
+    type One<'a> = CompMut<'a, C>;
+
+    fn one<'a>(fetched: Fetched<'a>, id: NodeId) -> CompMut<'a, C> {
+        let Inner::Column {
+            slots,
+            col: Borrowed::Exclusive(erased),
+        } = fetched.inner
+        else {
+            unreachable!("a `&mut` element is always fetched exclusively from a column")
+        };
+        let column = erased
+            .as_any_mut()
+            .downcast_mut::<Column<C>>()
+            .expect("a column holds its registered type");
+        column
+            .get_mut(slots, id)
+            .expect("fetch checked the id is live")
+    }
 }
 
 impl<R: Resource> sealed::Sealed for Res<R> {}
@@ -368,6 +425,12 @@ impl<R: Resource> Element for Res<R> {
             .downcast_ref::<Entry<R>>()
             .expect("an entry holds its type")
             .value
+    }
+
+    type One<'a> = &'a R;
+
+    fn one<'a>(fetched: Fetched<'a>, _id: NodeId) -> &'a R {
+        Self::view(fetched)
     }
 }
 
@@ -390,37 +453,63 @@ impl<R: Resource> Element for ResMut<R> {
                 .expect("an entry holds its type"),
         )
     }
+
+    type One<'a> = ResourceMut<'a, R>;
+
+    fn one<'a>(fetched: Fetched<'a>, _id: NodeId) -> ResourceMut<'a, R> {
+        Self::view(fetched)
+    }
 }
 
 impl<C: Component> Query for &C {
     type Out<'a> = Comps<'a, C>;
+    type One<'a> = &'a C;
 
     fn fetch<'a>(data: Data<'a>) -> Comps<'a, C> {
         <(Self,) as Query>::fetch(data).0
+    }
+
+    fn fetch_one<'a>(data: Data<'a>, id: NodeId) -> &'a C {
+        <(Self,) as Query>::fetch_one(data, id).0
     }
 }
 
 impl<C: Component> Query for &mut C {
     type Out<'a> = CompsMut<'a, C>;
+    type One<'a> = CompMut<'a, C>;
 
     fn fetch<'a>(data: Data<'a>) -> CompsMut<'a, C> {
         <(Self,) as Query>::fetch(data).0
+    }
+
+    fn fetch_one<'a>(data: Data<'a>, id: NodeId) -> CompMut<'a, C> {
+        <(Self,) as Query>::fetch_one(data, id).0
     }
 }
 
 impl<R: Resource> Query for Res<R> {
     type Out<'a> = &'a R;
+    type One<'a> = &'a R;
 
     fn fetch<'a>(data: Data<'a>) -> &'a R {
         <(Self,) as Query>::fetch(data).0
+    }
+
+    fn fetch_one<'a>(data: Data<'a>, id: NodeId) -> &'a R {
+        <(Self,) as Query>::fetch_one(data, id).0
     }
 }
 
 impl<R: Resource> Query for ResMut<R> {
     type Out<'a> = ResourceMut<'a, R>;
+    type One<'a> = ResourceMut<'a, R>;
 
     fn fetch<'a>(data: Data<'a>) -> ResourceMut<'a, R> {
         <(Self,) as Query>::fetch(data).0
+    }
+
+    fn fetch_one<'a>(data: Data<'a>, id: NodeId) -> ResourceMut<'a, R> {
+        <(Self,) as Query>::fetch_one(data, id).0
     }
 }
 
@@ -538,6 +627,7 @@ macro_rules! tuple_query {
 
         impl<$($T: Element),+> Query for ($($T,)+) {
             type Out<'a> = ($($T::Out<'a>,)+);
+            type One<'a> = ($($T::One<'a>,)+);
 
             #[allow(non_snake_case)]
             fn fetch<'a>(data: Data<'a>) -> Self::Out<'a> {
@@ -545,6 +635,15 @@ macro_rules! tuple_query {
                 let Data { slots, components, resources } = data;
                 let [$($T,)+] = fetch_places(slots, components.stores_mut(), resources, want);
                 ($($T::view($T),)+)
+            }
+
+            #[allow(non_snake_case)]
+            fn fetch_one<'a>(data: Data<'a>, id: NodeId) -> Self::One<'a> {
+                assert!(data.slots.is_live(id), "fetch of a stale id: {id:?}");
+                let want = [$(($T::place(&data), $T::MUTABLE)),+];
+                let Data { slots, components, resources } = data;
+                let [$($T,)+] = fetch_places(slots, components.stores_mut(), resources, want);
+                ($($T::one($T, id),)+)
             }
         }
     };
