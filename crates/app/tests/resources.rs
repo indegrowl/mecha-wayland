@@ -583,3 +583,61 @@ fn fetch_after_removing_the_owner_panics() {
     app.emit(Poke, d);
     app.flush();
 }
+
+// ── Spawner ─────────────────────────────────────────────────────────────
+
+/// Reads `Score` during its build, writes `Layout` on itself and on a
+/// child through `fetch`, and bumps `Score` twice.
+struct Seeded {
+    child: Handle<Leaf>,
+}
+struct SeededBuilder;
+impl Build for SeededBuilder {
+    type Widget = Seeded;
+}
+impl Widget for Seeded {
+    type Builder = SeededBuilder;
+    fn build(_b: SeededBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        let base = s.resource::<Score>().0;
+        let child = s.spawn(me, Leaf);
+        {
+            let (mut layout, mut score) = s.fetch::<(&mut Layout, ResMut<Score>)>(me);
+            layout.0 = base;
+            score.0 += 1;
+        }
+        s.fetch::<&mut Layout>(child).0 = base + 100;
+        s.resource_mut::<Score>().0 += 1;
+        Seeded { child }
+    }
+}
+
+#[test]
+fn a_build_reads_writes_and_fetches_resources() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(5));
+    let s = app.spawn(app.root(), SeededBuilder);
+    let child = app.widget::<Seeded>(s).unwrap().child;
+    assert_eq!(app.component::<Layout>(s), Some(&Layout(5)));
+    assert_eq!(app.component::<Layout>(child), Some(&Layout(105)));
+    assert_eq!(app.resource::<Score>(), &Score(7));
+}
+
+#[test]
+#[should_panic(expected = "not inserted")]
+fn a_build_reading_an_absent_resource_panics() {
+    struct Needy;
+    struct NeedyBuilder;
+    impl Build for NeedyBuilder {
+        type Widget = Needy;
+    }
+    impl Widget for Needy {
+        type Builder = NeedyBuilder;
+        fn build(_b: NeedyBuilder, _me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            let _ = s.resource::<Never>();
+            Needy
+        }
+    }
+    let mut app = App::new();
+    app.spawn(app.root(), NeedyBuilder);
+}

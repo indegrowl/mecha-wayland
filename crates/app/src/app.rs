@@ -641,10 +641,11 @@ fn drain_resource_changed<R: Resource>(app: &mut App, _: &PostTick) {
 
 /// What a [`Widget::build`] gets to touch while it runs: the node being
 /// built, attaching children under it, single-node component access
-/// meant for `me` and the nodes it spawned, and attaching handlers on
-/// its behalf. Typed by the widget being built so a handler it registers
-/// knows what `me` is. Deliberately narrow: no whole-column views, no
-/// drain, no split. A later slice adds resource access here.
+/// meant for `me` and the nodes it spawned, the app's resources, and
+/// attaching handlers on its behalf. Typed by the widget being built so
+/// a handler it registers knows what `me` is. Deliberately narrow: no
+/// whole-column views, no drain, no split, no messages. [`Spawner::fetch`]
+/// is the way to hold several guards on one node at once.
 pub struct Spawner<'a, W: Widget> {
     app: &'a mut App,
     me: Handle<W>,
@@ -721,6 +722,22 @@ impl<W: Widget> Spawner<'_, W> {
     /// write; the `Default` a spawn starts from does not.
     pub fn component_mut<C: Component>(&mut self, id: impl Into<NodeId>) -> Option<CompMut<'_, C>> {
         self.app.component_mut(id)
+    }
+
+    /// See [`App::resource`]. Panics if `R` is not inserted.
+    pub fn resource<R: Resource>(&self) -> &R {
+        self.app.resource::<R>()
+    }
+
+    /// See [`App::resource_mut`]. Panics if `R` is not inserted.
+    pub fn resource_mut<R: Resource>(&mut self) -> ResourceMut<'_, R> {
+        self.app.resource_mut::<R>()
+    }
+
+    /// See [`App::fetch`]. `id` is `me` or a node spawned earlier in this
+    /// build, so it is live; a stale id is a caller bug and panics.
+    pub fn fetch<Q: Query>(&mut self, id: impl Into<NodeId>) -> Q::One<'_> {
+        self.app.fetch::<Q>(id)
     }
 }
 
