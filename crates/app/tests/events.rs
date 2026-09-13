@@ -492,7 +492,7 @@ fn a_handler_adding_a_handler_to_its_target_keeps_both_in_order() {
             s.on::<Inc>(me, |ctx, _| {
                 log("adder");
                 let target = ctx.target();
-                let root = ctx.root();
+                let root = ctx.tree().root();
                 ctx.spawn(
                     root,
                     WatcherBuilder {
@@ -535,7 +535,7 @@ fn a_reused_slot_inherits_no_handlers_from_the_node_a_handler_removed() {
             s.on::<Inc>(child, |ctx, _| {
                 log("reap");
                 let target = ctx.target();
-                let root = ctx.root();
+                let root = ctx.tree().root();
                 ctx.remove(target);
                 ctx.spawn(root, Leaf);
             });
@@ -642,17 +642,17 @@ fn a_handler_can_emit_and_signal_and_its_event_runs_before_its_signal() {
     struct Relay;
     struct Kick;
     impl Event for Kick {}
-    struct RelayBuilder;
+    struct RelayBuilder(Handle<Counter>);
     impl Build for RelayBuilder {
         type Widget = Relay;
     }
     impl Widget for Relay {
         type Builder = RelayBuilder;
-        fn build(_b: RelayBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
-            s.on::<Kick>(me, |ctx, _| {
-                let counters: Vec<NodeId> = ctx.widgets::<Counter>().map(|(id, _)| id).collect();
+        fn build(b: RelayBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            let counter = b.0;
+            s.on::<Kick>(me, move |ctx, _| {
                 ctx.signal(Ping);
-                ctx.emit(Inc, counters);
+                ctx.emit(Inc, counter);
                 log("kick");
             });
             Relay
@@ -665,8 +665,8 @@ fn a_handler_can_emit_and_signal_and_its_event_runs_before_its_signal() {
 
     let mut app = App::new();
     app.system(on_ping);
-    app.spawn(app.root(), CounterBuilder);
-    let r = app.spawn(app.root(), RelayBuilder);
+    let c = app.spawn(app.root(), CounterBuilder);
+    let r = app.spawn(app.root(), RelayBuilder(c));
     app.emit(Kick, r);
     app.flush();
     assert_eq!(take_log(), ["kick", "ping 1"]);

@@ -485,3 +485,101 @@ fn data_fetches_beside_the_tree() {
     drop((layout, score));
     assert_eq!(data.component::<Layout>(parent), Some(&Layout(1)));
 }
+
+// ── Context ─────────────────────────────────────────────────────────────
+
+struct Poke;
+impl Event for Poke {}
+
+/// On `Poke`: reads `Score`, writes its own `Layout` and `Score` through
+/// one fetch, writes `Score` again through the guard, and logs.
+struct Player;
+struct PlayerBuilder;
+impl Build for PlayerBuilder {
+    type Widget = Player;
+}
+impl Widget for Player {
+    type Builder = PlayerBuilder;
+    fn build(_b: PlayerBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        s.on::<Poke>(me, |ctx, _| {
+            let before = ctx.resource::<Score>().0;
+            {
+                let (mut layout, mut score) = ctx.fetch::<(&mut Layout, ResMut<Score>)>();
+                layout.0 = score.0;
+                score.0 += 1;
+            }
+            ctx.resource_mut::<Score>().0 += 10;
+            log(format!("poke {before} -> {}", ctx.resource::<Score>().0));
+        });
+        Player
+    }
+}
+
+#[test]
+fn a_handler_reads_writes_and_fetches_resources() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(1));
+    let p = app.spawn(app.root(), PlayerBuilder);
+    app.emit(Poke, p);
+    app.flush();
+    assert_eq!(take_log(), ["poke 1 -> 12"]);
+    assert_eq!(app.component::<Layout>(p), Some(&Layout(1)));
+    assert_eq!(app.resource::<Score>(), &Score(12));
+}
+
+#[test]
+fn a_handler_walks_the_tree_through_the_view() {
+    struct Counter;
+    struct CounterBuilder;
+    impl Build for CounterBuilder {
+        type Widget = Counter;
+    }
+    impl Widget for Counter {
+        type Builder = CounterBuilder;
+        fn build(_b: CounterBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Poke>(me, |ctx, _| {
+                let tree = ctx.tree();
+                let n = tree.children(tree.root()).unwrap().len();
+                let parent = tree.parent(ctx.handle()).unwrap();
+                log(format!(
+                    "{n} under root, parent is root: {}",
+                    parent == tree.root()
+                ));
+            });
+            Counter
+        }
+    }
+    let mut app = App::new();
+    let c = app.spawn(app.root(), CounterBuilder);
+    app.spawn(app.root(), Leaf);
+    app.emit(Poke, c);
+    app.flush();
+    assert_eq!(take_log(), ["2 under root, parent is root: true"]);
+}
+
+#[test]
+#[should_panic(expected = "stale id")]
+fn fetch_after_removing_the_owner_panics() {
+    struct SelfDestruct;
+    struct SelfDestructBuilder;
+    impl Build for SelfDestructBuilder {
+        type Widget = SelfDestruct;
+    }
+    impl Widget for SelfDestruct {
+        type Builder = SelfDestructBuilder;
+        fn build(_b: SelfDestructBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Poke>(me, |ctx, _| {
+                let handle = ctx.handle();
+                ctx.remove(handle);
+                let _ = ctx.fetch::<&Layout>();
+            });
+            SelfDestruct
+        }
+    }
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    let d = app.spawn(app.root(), SelfDestructBuilder);
+    app.emit(Poke, d);
+    app.flush();
+}
