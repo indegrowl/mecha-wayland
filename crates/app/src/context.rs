@@ -27,7 +27,7 @@ use crate::{
 /// The owner's own handler list is out of its slot while a handler runs,
 /// so nothing here can alias it.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// use app::prelude::*;
 /// # struct Leaf;
 /// # impl Build for Leaf { type Widget = Leaf; }

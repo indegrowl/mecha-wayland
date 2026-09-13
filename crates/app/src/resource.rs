@@ -31,9 +31,9 @@ pub(crate) struct Entry<R> {
 
 /// Exclusive access to a resource, and the only way to a `&mut R`.
 ///
-/// Derefs both ways. The first `DerefMut` records the resource as
-/// changed; every later `DerefMut` on the same guard is a load and a
-/// branch. Assigning an equal value through `DerefMut` still counts as a
+/// Derefs both ways. The first `DerefMut` sets the changed bit; every
+/// later `DerefMut` on the same guard repeats the same unconditional
+/// store. Assigning an equal value through `DerefMut` still counts as a
 /// change. Use [`ResourceMut::set_if_neq`] when that matters.
 pub struct ResourceMut<'a, R> {
     value: &'a mut R,

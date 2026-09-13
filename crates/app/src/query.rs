@@ -536,7 +536,7 @@ fn fetch_places<'a, const N: usize>(
         for j in (i + 1)..N {
             assert!(
                 want[i].0 != want[j].0 || !(want[i].1 || want[j].1),
-                "a query names the same place twice, at least once mutably"
+                "a query or fetch names the same place twice, at least once mutably"
             );
         }
     }
@@ -596,21 +596,23 @@ fn fetch_places<'a, const N: usize>(
         k = end;
     }
 
-    for (type_id, entry) in resources.entries_mut() {
-        let place = Place::Resource(*type_id);
-        let erased: &'a mut dyn Any = &mut **entry;
-        match (0..N).find(|&i| want[i].0 == place && want[i].1) {
-            Some(i) => {
-                out[i] = Some(Fetched {
-                    inner: Inner::Resource(Borrowed::Exclusive(erased)),
-                });
-            }
-            None => {
-                let shared: &'a dyn Any = &*erased;
-                for i in (0..N).filter(|&i| want[i].0 == place) {
+    if want.iter().any(|(p, _)| matches!(p, Place::Resource(_))) {
+        for (type_id, entry) in resources.entries_mut() {
+            let place = Place::Resource(*type_id);
+            let erased: &'a mut dyn Any = &mut **entry;
+            match (0..N).find(|&i| want[i].0 == place && want[i].1) {
+                Some(i) => {
                     out[i] = Some(Fetched {
-                        inner: Inner::Resource(Borrowed::Shared(shared)),
+                        inner: Inner::Resource(Borrowed::Exclusive(erased)),
                     });
+                }
+                None => {
+                    let shared: &'a dyn Any = &*erased;
+                    for i in (0..N).filter(|&i| want[i].0 == place) {
+                        out[i] = Some(Fetched {
+                            inner: Inner::Resource(Borrowed::Shared(shared)),
+                        });
+                    }
                 }
             }
         }

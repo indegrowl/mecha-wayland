@@ -363,6 +363,8 @@ impl App {
     /// Takes `&mut self` even for a read-only query, since one signature
     /// covers both, so the views hold the app exclusively while they live.
     /// Cost per column: one hash and one downcast. Nothing per node.
+    /// Cost per resource element: one pass over the resource map, a
+    /// `TypeId` compare per inserted resource.
     ///
     /// # Panics
     ///
