@@ -9,11 +9,12 @@ edition = "2024"
 app.workspace = true
 
 [workspace]
-members = ["crates/app"]
+members = ["crates/app", "crates/geometry"]
 resolver = "3"
 
 [workspace.dependencies]
 app = { path = "crates/app" }
+geometry = { path = "crates/geometry" }
 smallvec = "1"
 
 [profile.dev]
