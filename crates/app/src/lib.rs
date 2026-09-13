@@ -56,8 +56,8 @@
 //! are plain references. Writes go through a [`CompMut`] guard whose
 //! first `DerefMut` records the node as changed, and
 //! [`App::take_changed`] drains that record in first-write order.
-//! [`App::components`] fetches one or more columns at once as [`Comps`]
-//! and [`CompsMut`] views, and [`App::split`] lends the tree read-only
+//! [`App::query`] fetches one or more columns at once as [`Comps`] and
+//! [`CompsMut`] views, and [`App::split`] lends the tree read-only
 //! beside them. [`App::spawn_with`] gives a node its initial values as a
 //! [`Bundle`], a tuple of components written before its `build` runs.
 //!
@@ -78,8 +78,8 @@
 //! let a = app.spawn(app.root(), Leaf);
 //! let b = app.spawn(a, Leaf);
 //!
-//! let (tree, mut cols) = app.split();
-//! let mut depth = cols.components::<&mut Depth>();
+//! let (tree, mut data) = app.split();
+//! let mut depth = data.query::<&mut Depth>();
 //! for id in tree.descendants(tree.root()) {
 //!     depth.get_mut(id).unwrap().0 = tree.ancestors(id).count() as u32;
 //! }
@@ -193,7 +193,7 @@ pub use handler::Targets;
 pub use id::{Handle, NodeId};
 pub use message::{Emitted, Event, OnChanged, PostTick, Removed, Signal, Spawned, Tick};
 pub use module::Module;
-pub use query::{Columns, CompMut, Comps, CompsMut, Query};
+pub use query::{CompMut, Comps, CompsMut, Data, Query};
 pub use resource::{Resource, ResourceMut};
 pub use system::System;
 pub use tree::Tree;
@@ -201,7 +201,7 @@ pub use widgets::{Build, Widget};
 
 pub mod prelude {
     pub use crate::{
-        App, Build, Bundle, Columns, CompMut, Component, Comps, CompsMut, Context, Emitted, Event,
+        App, Build, Bundle, CompMut, Component, Comps, CompsMut, Context, Data, Emitted, Event,
         Handle, Module, NodeId, OnChanged, PostTick, Query, Removed, Resource, ResourceMut, Signal,
         Spawned, Spawner, System, Targets, Tick, Tree, Widget,
     };

@@ -263,3 +263,30 @@ fn component_change_handlers_run_before_resource_change_systems() {
     app.tick();
     assert!(take_log().is_empty());
 }
+
+// ── Data ────────────────────────────────────────────────────────────────
+
+#[test]
+fn split_lends_the_tree_a_column_and_a_resource_together() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(0));
+    let a = app.spawn(app.root(), Leaf);
+    let b = app.spawn(a, Leaf);
+    {
+        let (tree, mut data) = app.split();
+        let mut layout = data.query::<&mut Layout>();
+        for id in tree.descendants(tree.root()) {
+            layout.get_mut(id).unwrap().0 = tree.ancestors(id).count() as u32;
+        }
+        drop(layout);
+        data.resource_mut::<Score>().0 = tree.descendants(tree.root()).count() as u32;
+        assert_eq!(data.resource::<Score>(), &Score(2));
+        assert_eq!(data.component::<Layout>(b), Some(&Layout(2)));
+    }
+    assert_eq!(app.resource::<Score>(), &Score(2));
+    assert_eq!(
+        app.take_changed::<Layout>().collect::<Vec<_>>(),
+        vec![a.id(), b.id()]
+    );
+}

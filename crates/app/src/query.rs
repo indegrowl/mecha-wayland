@@ -4,8 +4,9 @@ use std::cell::Cell;
 use std::ops::{Deref, DerefMut, Index};
 
 use crate::component::{AnyColumn, Column, Components};
+use crate::resource::{ResourceMut, Resources};
 use crate::slots::Slots;
-use crate::{Component, NodeId};
+use crate::{Component, NodeId, Resource};
 
 /// Exclusive access to one node's `C`, and the only way to a `&mut C`.
 ///
@@ -156,25 +157,36 @@ impl<C: Component, I: Into<NodeId>> Index<I> for CompsMut<'_, C> {
     }
 }
 
-// ── the component side of the app ────────────────────────────────────────
+// ── the data side of the app ─────────────────────────────────────────────
 
-/// Every component access without the tree: what a [`Query`] fetches
-/// from, and the second half of [`App::split`](crate::App::split).
-pub struct Columns<'a> {
+/// Every component and resource access without the tree: what a
+/// [`Query`] fetches from, and the second half of
+/// [`App::split`](crate::App::split).
+pub struct Data<'a> {
     slots: &'a Slots,
     components: &'a mut Components,
+    resources: &'a mut Resources,
 }
 
-impl<'a> Columns<'a> {
-    pub(crate) fn new(slots: &'a Slots, components: &'a mut Components) -> Self {
-        Self { slots, components }
+impl<'a> Data<'a> {
+    pub(crate) fn new(
+        slots: &'a Slots,
+        components: &'a mut Components,
+        resources: &'a mut Resources,
+    ) -> Self {
+        Self {
+            slots,
+            components,
+            resources,
+        }
     }
 
-    /// Fetch the views `Q` names. See [`App::components`](crate::App::components).
-    pub fn components<Q: Query>(&mut self) -> Q::Out<'_> {
-        Q::fetch(Columns {
+    /// Fetch the views `Q` names. See [`App::query`](crate::App::query).
+    pub fn query<Q: Query>(&mut self) -> Q::Out<'_> {
+        Q::fetch(Data {
             slots: self.slots,
             components: &mut *self.components,
+            resources: &mut *self.resources,
         })
     }
 
@@ -191,6 +203,19 @@ impl<'a> Columns<'a> {
             .column_mut::<C>()
             .get_mut(self.slots, id.into())
     }
+
+    /// The app's `R`. See [`App::resource`](crate::App::resource). Panics
+    /// if `R` is not inserted.
+    pub fn resource<R: Resource>(&self) -> &R {
+        self.resources.get::<R>()
+    }
+
+    /// A write guard for the app's `R`. See
+    /// [`App::resource_mut`](crate::App::resource_mut). Panics if `R` is
+    /// not inserted.
+    pub fn resource_mut<R: Resource>(&mut self) -> ResourceMut<'_, R> {
+        self.resources.get_mut::<R>()
+    }
 }
 
 // ── queries ──────────────────────────────────────────────────────────────
@@ -199,7 +224,7 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// What [`App::components`](crate::App::components) fetches: `&C` for a
+/// What [`App::query`](crate::App::query) fetches: `&C` for a
 /// [`Comps`], `&mut C` for a [`CompsMut`], or a tuple of one to six of
 /// those for a tuple of views. Sealed; the impls here are the whole set.
 ///
@@ -210,7 +235,7 @@ pub trait Query: sealed::Sealed {
     type Out<'a>;
 
     #[doc(hidden)]
-    fn fetch<'a>(columns: Columns<'a>) -> Self::Out<'a>;
+    fn fetch<'a>(data: Data<'a>) -> Self::Out<'a>;
 }
 
 /// One column of a query. Only the tuple impls of [`Query`] use it.
@@ -218,7 +243,7 @@ pub trait Query: sealed::Sealed {
 pub trait Element: sealed::Sealed {
     const MUTABLE: bool;
     type Out<'a>;
-    fn column(columns: &Columns<'_>) -> u32;
+    fn column(data: &Data<'_>) -> u32;
     fn view<'a>(fetched: Fetched<'a>) -> Self::Out<'a>;
 }
 
@@ -240,8 +265,8 @@ impl<C: Component> Element for &C {
     const MUTABLE: bool = false;
     type Out<'a> = Comps<'a, C>;
 
-    fn column(columns: &Columns<'_>) -> u32 {
-        columns.components.column_of::<C>()
+    fn column(data: &Data<'_>) -> u32 {
+        data.components.column_of::<C>()
     }
 
     fn view<'a>(fetched: Fetched<'a>) -> Comps<'a, C> {
@@ -265,8 +290,8 @@ impl<C: Component> Element for &mut C {
     const MUTABLE: bool = true;
     type Out<'a> = CompsMut<'a, C>;
 
-    fn column(columns: &Columns<'_>) -> u32 {
-        columns.components.column_of::<C>()
+    fn column(data: &Data<'_>) -> u32 {
+        data.components.column_of::<C>()
     }
 
     fn view<'a>(fetched: Fetched<'a>) -> CompsMut<'a, C> {
@@ -287,16 +312,16 @@ impl<C: Component> Element for &mut C {
 impl<C: Component> Query for &C {
     type Out<'a> = Comps<'a, C>;
 
-    fn fetch<'a>(columns: Columns<'a>) -> Comps<'a, C> {
-        <(Self,) as Query>::fetch(columns).0
+    fn fetch<'a>(data: Data<'a>) -> Comps<'a, C> {
+        <(Self,) as Query>::fetch(data).0
     }
 }
 
 impl<C: Component> Query for &mut C {
     type Out<'a> = CompsMut<'a, C>;
 
-    fn fetch<'a>(columns: Columns<'a>) -> CompsMut<'a, C> {
-        <(Self,) as Query>::fetch(columns).0
+    fn fetch<'a>(data: Data<'a>) -> CompsMut<'a, C> {
+        <(Self,) as Query>::fetch(data).0
     }
 }
 
@@ -376,9 +401,9 @@ macro_rules! tuple_query {
             type Out<'a> = ($($T::Out<'a>,)+);
 
             #[allow(non_snake_case)]
-            fn fetch<'a>(columns: Columns<'a>) -> Self::Out<'a> {
-                let want = [$(($T::column(&columns), $T::MUTABLE)),+];
-                let Columns { slots, components } = columns;
+            fn fetch<'a>(data: Data<'a>) -> Self::Out<'a> {
+                let want = [$(($T::column(&data), $T::MUTABLE)),+];
+                let Data { slots, components, resources: _ } = data;
                 let [$($T,)+] = fetch_columns(slots, components.stores_mut(), want);
                 ($($T::view($T),)+)
             }

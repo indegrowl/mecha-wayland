@@ -5,7 +5,7 @@ use crate::context::Context;
 use crate::handler::{Handler, HandlerColumns, Targets, dispatch};
 use crate::message::{Emitted, OnChanged, PostTick, Removed, Spawned, Tick};
 use crate::nodes::{Node, Nodes};
-use crate::query::{Columns, CompMut, Query};
+use crate::query::{CompMut, Data, Query};
 use crate::resource::{ResourceMut, Resources};
 use crate::slots::Slots;
 use crate::system::{System, Systems};
@@ -299,7 +299,7 @@ impl App {
     /// One node's `C`. `None` if `id` is stale.
     ///
     /// Pays the column lookup on every call; a pass over many nodes takes
-    /// a view through [`App::components`] once instead.
+    /// a view through [`App::query`] once instead.
     ///
     /// # Panics
     ///
@@ -350,7 +350,7 @@ impl App {
     /// # let mut app = App::new();
     /// # app.register_component::<Style>();
     /// # app.register_component::<Rect>();
-    /// let (style, mut rect) = app.components::<(&Style, &mut Rect)>();
+    /// let (style, mut rect) = app.query::<(&Style, &mut Rect)>();
     /// # let _ = (&style, &mut rect);
     /// ```
     ///
@@ -362,17 +362,21 @@ impl App {
     ///
     /// If a named type is not registered, or one type appears twice with
     /// at least one `&mut`. `(&A, &A)` is fine.
-    pub fn components<Q: Query>(&mut self) -> Q::Out<'_> {
-        Q::fetch(Columns::new(&self.slots, &mut self.components))
+    pub fn query<Q: Query>(&mut self) -> Q::Out<'_> {
+        Q::fetch(Data::new(
+            &self.slots,
+            &mut self.components,
+            &mut self.resources,
+        ))
     }
 
-    /// The tree read-only and the columns mutably, at the same time. For a
-    /// pass that walks the tree while writing a column, such as layout
-    /// reading `children` and writing a rect.
-    pub fn split(&mut self) -> (Tree<'_>, Columns<'_>) {
+    /// The tree read-only and the data mutably, at the same time. For a
+    /// pass that walks the tree while writing a column or a resource,
+    /// such as layout reading `children` and writing a rect.
+    pub fn split(&mut self) -> (Tree<'_>, Data<'_>) {
         (
             Tree::new(&self.slots, &self.nodes),
-            Columns::new(&self.slots, &mut self.components),
+            Data::new(&self.slots, &mut self.components, &mut self.resources),
         )
     }
 
