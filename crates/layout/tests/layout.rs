@@ -82,8 +82,6 @@ fn child(app: &mut App, parent: NodeId, style: LayoutStyle) -> NodeId {
     app.spawn_with(parent, Leaf, (style,)).id()
 }
 
-// Used from Task 5 or 6; the allow goes with it.
-#[allow(dead_code)]
 fn rect(app: &App, id: NodeId) -> Rect {
     app.component::<Layout>(id).unwrap().rect
 }
@@ -92,8 +90,6 @@ fn fixed(w: f32, h: f32) -> LayoutStyle {
     LayoutStyle::default().size(px(w), px(h))
 }
 
-// Used from Task 5 or 6; the allow goes with it.
-#[allow(dead_code)]
 fn sorted(mut v: Vec<NodeId>) -> Vec<NodeId> {
     v.sort_by_key(|id| id.slot());
     v
@@ -281,4 +277,355 @@ fn marking_a_node_as_a_root_makes_it_its_own_dirty_root() {
     app.component_mut::<LayoutRoot>(later).unwrap().0 = true;
     app.tick();
     assert_eq!(take_done(), vec![vec![later]]);
+}
+
+// ── boxes ───────────────────────────────────────────────────────────────
+
+#[test]
+fn a_row_of_fixed_children_lands_side_by_side() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let b = child(&mut app, r, fixed(70.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, r), Rect::new(0.0, 0.0, 300.0, 100.0));
+    assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 50.0, 40.0));
+    assert_eq!(rect(&app, b), Rect::new(50.0, 0.0, 70.0, 40.0));
+}
+
+#[test]
+fn a_column_stacks_children() {
+    let mut app = app();
+    let r = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (LayoutRoot(true), root_style(300.0, 100.0).column()),
+        )
+        .id();
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let b = child(&mut app, r, fixed(70.0, 30.0));
+    app.tick();
+    assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 50.0, 40.0));
+    assert_eq!(rect(&app, b), Rect::new(0.0, 40.0, 70.0, 30.0));
+}
+
+#[test]
+fn percent_and_fill_resolve_against_the_parent() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let half = child(
+        &mut app,
+        r,
+        LayoutStyle::default().size(percent(50.0), percent(50.0)),
+    );
+    let r2 = root(&mut app, 200.0, 80.0);
+    let all = child(&mut app, r2, LayoutStyle::default().fill());
+    app.tick();
+    assert_eq!(rect(&app, half), Rect::new(0.0, 0.0, 150.0, 50.0));
+    assert_eq!(rect(&app, all), Rect::new(0.0, 0.0, 200.0, 80.0));
+}
+
+#[test]
+fn padding_and_border_inset_the_content_and_offset_the_child() {
+    let mut app = app();
+    let style = root_style(300.0, 100.0)
+        .padding_all(px(10.0))
+        .border(Insets::all(px(2.0)));
+    let r = app
+        .spawn_with(app.root(), Leaf, (LayoutRoot(true), style))
+        .id();
+    let inner = child(&mut app, r, LayoutStyle::default().fill());
+    app.tick();
+    let root_layout = *app.component::<Layout>(r).unwrap();
+    assert_eq!(root_layout.padding, Insets::all(10.0));
+    assert_eq!(root_layout.border, Insets::all(2.0));
+    assert_eq!(root_layout.content(), Rect::new(12.0, 12.0, 276.0, 76.0));
+    assert_eq!(rect(&app, inner), Rect::new(12.0, 12.0, 276.0, 76.0));
+}
+
+#[test]
+fn nested_boxes_are_in_the_roots_coordinates() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let outer = child(&mut app, r, fixed(200.0, 80.0).padding_all(px(5.0)));
+    let inner = child(&mut app, outer, fixed(20.0, 10.0));
+    let sibling = child(&mut app, r, fixed(30.0, 10.0));
+    app.tick();
+    assert_eq!(rect(&app, outer), Rect::new(0.0, 0.0, 200.0, 80.0));
+    assert_eq!(rect(&app, inner), Rect::new(5.0, 5.0, 20.0, 10.0));
+    assert_eq!(rect(&app, sibling), Rect::new(200.0, 0.0, 30.0, 10.0));
+}
+
+#[test]
+fn flex_grow_splits_the_free_space() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(
+        &mut app,
+        r,
+        LayoutStyle::default().height(px(40.0)).grow(1.0),
+    );
+    let b = child(
+        &mut app,
+        r,
+        LayoutStyle::default().height(px(40.0)).grow(2.0),
+    );
+    app.tick();
+    assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 100.0, 40.0));
+    assert_eq!(rect(&app, b), Rect::new(100.0, 0.0, 200.0, 40.0));
+}
+
+#[test]
+fn justify_places_children_as_css_would() {
+    let mut app = app();
+    let centered = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                root_style(300.0, 100.0).justify(Justify::Center),
+            ),
+        )
+        .id();
+    let c1 = child(&mut app, centered, fixed(50.0, 40.0));
+    let c2 = child(&mut app, centered, fixed(50.0, 40.0));
+    let between = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                root_style(300.0, 100.0).justify(Justify::SpaceBetween),
+            ),
+        )
+        .id();
+    let b1 = child(&mut app, between, fixed(50.0, 40.0));
+    let b2 = child(&mut app, between, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, c1).x(), 100.0);
+    assert_eq!(rect(&app, c2).x(), 150.0);
+    assert_eq!(rect(&app, b1).x(), 0.0);
+    assert_eq!(rect(&app, b2).x(), 250.0);
+}
+
+#[test]
+fn a_fixed_measure_sizes_a_leaf() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let leaf = app
+        .spawn_with(r, Leaf, (Measure::fixed(Size::new(30.0, 20.0)),))
+        .id();
+    app.tick();
+    assert_eq!(rect(&app, leaf), Rect::new(0.0, 0.0, 30.0, 20.0));
+}
+
+#[test]
+fn a_measure_closure_sees_the_offered_width() {
+    let mut app = app();
+    let r = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                LayoutStyle::default().size(px(200.0), px(100.0)).column(),
+            ),
+        )
+        .id();
+    // Stretched across a 200 wide column; answers "at width w I am 1000/w tall".
+    let measure = Measure::with(|c| {
+        let w = match (c.known_width, c.available_width) {
+            (Some(w), _) => w,
+            (None, Available::Definite(w)) => w,
+            _ => 100.0,
+        };
+        Size::new(w, 1000.0 / w)
+    });
+    let text = app.spawn_with(r, Leaf, (measure,)).id();
+    app.tick();
+    assert_eq!(rect(&app, text), Rect::new(0.0, 0.0, 200.0, 5.0));
+}
+
+#[test]
+fn a_write_between_ticks_moves_the_box_next_tick_and_then_rests() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    take_done();
+    take_moved();
+
+    app.component_mut::<LayoutStyle>(a).unwrap().width = px(80.0);
+    app.tick();
+    assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 80.0, 40.0));
+    assert_eq!(rect(&app, b), Rect::new(80.0, 0.0, 50.0, 40.0));
+    assert_eq!(take_done(), vec![vec![r]]);
+    let moved = take_moved();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(
+        sorted(moved[0].clone()),
+        sorted(vec![a, b]),
+        "the root did not move"
+    );
+
+    app.tick();
+    assert_eq!(take_done(), vec![vec![]]);
+    assert!(take_moved().is_empty());
+}
+
+#[test]
+fn on_changed_layout_names_only_the_boxes_that_changed() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    take_moved();
+    app.component_mut::<LayoutStyle>(b).unwrap().height = px(60.0);
+    app.tick();
+    let moved = take_moved();
+    assert_eq!(moved, vec![vec![b]], "a and the root are where they were");
+    let _ = a;
+}
+
+thread_local! {
+    static WIDEN: std::cell::Cell<Option<NodeId>> = const { std::cell::Cell::new(None) };
+}
+
+fn widen_on_tick(app: &mut App, _: &Tick) {
+    if let Some(id) = WIDEN.with(|w| w.take()) {
+        app.component_mut::<LayoutStyle>(id).unwrap().width = px(80.0);
+    }
+}
+
+#[test]
+fn a_style_written_by_a_tick_system_is_laid_out_in_the_same_tick() {
+    let mut app = app();
+    app.system(widen_on_tick);
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, a).width(), 50.0);
+    WIDEN.with(|w| w.set(Some(a)));
+    app.tick();
+    assert_eq!(
+        rect(&app, a).width(),
+        80.0,
+        "written during Tick, laid out at PostTick"
+    );
+}
+
+#[test]
+fn spawn_and_remove_move_the_siblings() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, b).x(), 50.0);
+    assert!(app.remove(a));
+    app.tick();
+    assert_eq!(rect(&app, b).x(), 0.0);
+}
+
+#[test]
+fn two_roots_do_not_disturb_each_other() {
+    let mut app = app();
+    let r1 = root(&mut app, 300.0, 100.0);
+    let r2 = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r1, fixed(50.0, 40.0));
+    let b = child(&mut app, r2, fixed(50.0, 40.0));
+    app.tick();
+    take_done();
+    assert_eq!(
+        rect(&app, r2),
+        Rect::new(0.0, 0.0, 300.0, 100.0),
+        "each root at its own origin"
+    );
+    app.component_mut::<LayoutStyle>(a).unwrap().width = px(80.0);
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r1]]);
+    assert_eq!(rect(&app, b), Rect::new(0.0, 0.0, 50.0, 40.0));
+}
+
+#[test]
+fn a_node_outside_every_root_keeps_a_zero_layout() {
+    let mut app = app();
+    let stray = app.spawn_with(app.root(), Leaf, (fixed(50.0, 40.0),)).id();
+    app.tick();
+    assert_eq!(rect(&app, stray), Rect::ZERO);
+    app.component_mut::<LayoutStyle>(stray).unwrap().width = px(10.0);
+    app.tick();
+    assert_eq!(rect(&app, stray), Rect::ZERO);
+    assert_eq!(rect(&app, app.root()), Rect::ZERO);
+}
+
+#[test]
+fn hidden_takes_no_space_and_gets_a_zero_size_box() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let h = child(&mut app, r, fixed(50.0, 40.0).hidden());
+    let under_h = child(&mut app, h, fixed(10.0, 10.0));
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 50.0, 40.0));
+    assert_eq!(rect(&app, h), Rect::ZERO);
+    assert_eq!(rect(&app, under_h), Rect::ZERO);
+    assert_eq!(rect(&app, b), Rect::new(50.0, 0.0, 50.0, 40.0));
+}
+
+#[test]
+fn marking_a_root_later_lays_its_subtree_out() {
+    let mut app = app();
+    let later = app
+        .spawn_with(app.root(), Leaf, (root_style(200.0, 100.0),))
+        .id();
+    let inner = child(&mut app, later, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, inner), Rect::ZERO);
+    app.component_mut::<LayoutRoot>(later).unwrap().0 = true;
+    app.tick();
+    assert_eq!(rect(&app, later), Rect::new(0.0, 0.0, 200.0, 100.0));
+    assert_eq!(rect(&app, inner), Rect::new(0.0, 0.0, 50.0, 40.0));
+}
+
+#[test]
+fn absolute_children_are_placed_by_inset_outside_the_flow() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let abs = child(
+        &mut app,
+        r,
+        fixed(30.0, 30.0)
+            .absolute()
+            .inset(Insets::new(px(10.0), auto(), auto(), px(20.0))),
+    );
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(rect(&app, abs), Rect::new(20.0, 10.0, 30.0, 30.0));
+    assert_eq!(rect(&app, a).x(), 0.0);
+    assert_eq!(rect(&app, b).x(), 50.0, "the absolute child took no space");
+}
+
+#[test]
+fn block_layout_stacks_and_stretches_width() {
+    let mut app = app();
+    let r = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (LayoutRoot(true), root_style(300.0, 100.0).block()),
+        )
+        .id();
+    let a = child(&mut app, r, LayoutStyle::default().height(px(20.0)));
+    let b = child(&mut app, r, LayoutStyle::default().height(px(30.0)));
+    app.tick();
+    assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 300.0, 20.0));
+    assert_eq!(rect(&app, b), Rect::new(0.0, 20.0, 300.0, 30.0));
 }

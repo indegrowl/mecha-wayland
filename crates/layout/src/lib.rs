@@ -2,6 +2,7 @@
 //! The layout module. Crate docs arrive in a later task.
 
 mod style;
+mod tree;
 
 use std::fmt;
 
@@ -9,10 +10,14 @@ use app::{App, Component, Module, NodeId, PostTick, Removed, Resource, Signal, S
 use geometry::{Insets, Rect, Size};
 use taffy::AvailableSpace;
 use taffy::geometry::Size as TSize;
+use taffy::style_helpers::TaffyMaxContent;
+use taffy::{compute_root_layout, round_layout};
 
 pub use style::{
     Align, Direction, Display, Justify, LayoutStyle, Position, Val, Wrap, auto, percent, px,
 };
+
+use tree::{LayoutTree, taffy_id};
 
 pub mod prelude {
     pub use crate::{
@@ -37,7 +42,6 @@ pub enum Available {
 }
 
 impl Available {
-    #[allow(dead_code)]
     fn from_taffy(a: AvailableSpace) -> Self {
         match a {
             AvailableSpace::Definite(v) => Available::Definite(v),
@@ -60,7 +64,6 @@ pub struct Constraints {
 }
 
 impl Constraints {
-    #[allow(dead_code)]
     pub(crate) fn from_taffy(known: TSize<Option<f32>>, available: TSize<AvailableSpace>) -> Self {
         Self {
             known_width: known.width,
@@ -170,8 +173,6 @@ impl Layout {
 /// the box before rounding, read back by the rounding walk so rounding
 /// errors do not accumulate down the tree. Both persist across ticks
 /// because a cached subtree is not revisited.
-// `unrounded` is read from Task 6; the allow goes with it.
-#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) cache: taffy::tree::Cache,
@@ -239,9 +240,26 @@ impl Module for LayoutModule {
 fn pass(app: &mut App, _: &PostTick) {
     drain(app);
     let roots = take_dirty_roots(app);
-    // The pass over each root arrives in a later task.
+    for &root in &roots {
+        layout_root(app, root);
+    }
+    // The pass wrote `Scratch` through flagging guards, and `Scratch`'s
+    // drain runs after this system; taking the record here means that
+    // drain emits nothing. The same call covers `invalidate`'s writes.
     app.take_changed::<Scratch>().for_each(drop);
     app.signal(LayoutDone { roots });
+}
+
+/// One pass over `root`'s subtree. The root is offered max-content space
+/// and sized by its own style. `round_layout` writes every `Layout`.
+fn layout_root(app: &mut App, root: NodeId) {
+    let (tree, mut data) = app.split();
+    let (styles, measures, layouts, scratch) =
+        data.query::<(&LayoutStyle, &Measure, &mut Layout, &mut Scratch)>();
+    let mut view = LayoutTree::new(tree, root, styles, measures, layouts, scratch);
+    let id = taffy_id(root);
+    compute_root_layout(&mut view, id, TSize::MAX_CONTENT);
+    round_layout(&mut view, id);
 }
 
 /// Take the three input records and invalidate every id in them. The
