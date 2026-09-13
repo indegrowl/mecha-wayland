@@ -63,7 +63,7 @@ impl<C: Component> Column<C> {
 
     /// `None` for a stale id.
     pub fn get(&self, slots: &Slots, id: NodeId) -> Option<&C> {
-        slots.is_live(id).then(|| self.values.get(id.index()))
+        slots.is_live(id).then(|| self.values.get(id.slot()))
     }
 
     /// Live slots only, in slot order. Walks every slot, dead ones
@@ -81,7 +81,7 @@ impl<C: Component> Column<C> {
         if !slots.is_live(id) {
             return None;
         }
-        let index = id.index();
+        let index = id.slot();
         Some(CompMut::new(
             id,
             self.values.get_mut(index),
@@ -138,7 +138,7 @@ impl Iterator for Changed<'_> {
     fn next(&mut self) -> Option<NodeId> {
         loop {
             let id = self.drain.next()?;
-            self.bits.set(id.index(), false);
+            self.bits.set(id.slot(), false);
             if self.slots.is_live(id) {
                 return Some(id);
             }
@@ -149,7 +149,7 @@ impl Iterator for Changed<'_> {
 impl Drop for Changed<'_> {
     fn drop(&mut self) {
         for id in self.drain.by_ref() {
-            self.bits.set(id.index(), false);
+            self.bits.set(id.slot(), false);
         }
     }
 }

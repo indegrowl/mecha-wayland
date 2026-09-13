@@ -65,7 +65,7 @@ impl Slots {
 
     /// One indexing: the slot exists, is live, and the generations match.
     pub fn is_live(&self, id: NodeId) -> bool {
-        match self.slots.get(id.index() as usize) {
+        match self.slots.get(id.slot() as usize) {
             Some(slot) => slot.is_live && slot.generation == id.generation(),
             None => false,
         }

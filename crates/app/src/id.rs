@@ -48,8 +48,12 @@ impl NodeId {
         self.widget_type
     }
 
+    /// The slot this id names: the arena index shared by every column in
+    /// the app. Reused once the node is removed, so it keys a side table
+    /// only for ids known to be live; a stale id's slot may already be
+    /// someone else's.
     #[inline]
-    pub(crate) const fn index(self) -> u64 {
+    pub const fn slot(self) -> u64 {
         self.index
     }
 }
@@ -119,7 +123,7 @@ mod tests {
         let id = NodeId::new(1, 2, 3);
         assert_eq!(id.generation(), 1);
         assert_eq!(id.widget_type(), 2);
-        assert_eq!(id.index(), 3);
+        assert_eq!(id.slot(), 3);
         assert_eq!(id, NodeId::new(1, 2, 3));
         assert_ne!(id, NodeId::new(0, 2, 3));
     }

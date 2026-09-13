@@ -133,7 +133,7 @@ pub(crate) fn dispatch<E: Event>(app: &mut App, event: &E, targets: &[NodeId]) {
             continue;
         }
         let taken = match app.handlers.column_of::<E>() {
-            Some(column) => column.take(target.index()),
+            Some(column) => column.take(target.slot()),
             None => return,
         };
         if taken.0.is_empty() {
@@ -175,7 +175,7 @@ impl<E: Event> Drop for Restore<'_, E> {
         let Some(column) = self.app.handlers.column_of::<E>() else {
             return;
         };
-        let Some(slot) = column.get_mut_checked(self.target.index()) else {
+        let Some(slot) = column.get_mut_checked(self.target.slot()) else {
             return;
         };
         let added = std::mem::take(slot);

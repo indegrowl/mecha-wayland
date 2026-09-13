@@ -189,11 +189,11 @@ impl App {
         // its parent so nothing is left pointing into the tree.
         let mut pending = vec![id];
         while let Some(current) = pending.pop() {
-            self.slots.free(current.index());
-            self.widgets.free(current.widget_type(), current.index());
-            self.components.free(current.index());
-            self.handlers.free(current.index());
-            let node = self.nodes.take(current.index());
+            self.slots.free(current.slot());
+            self.widgets.free(current.widget_type(), current.slot());
+            self.components.free(current.slot());
+            self.handlers.free(current.slot());
+            let node = self.nodes.take(current.slot());
             pending.extend(node.children);
         }
         true
@@ -248,7 +248,7 @@ impl App {
         }
         self.widgets
             .store::<W>(id.widget_type())?
-            .get(id.index())
+            .get(id.slot())
             .as_ref()
     }
 
@@ -260,7 +260,7 @@ impl App {
         }
         self.widgets
             .store_mut::<W>(id.widget_type())?
-            .get_mut(id.index())
+            .get_mut(id.slot())
             .as_mut()
     }
 
@@ -586,11 +586,11 @@ impl App {
 
     /// The node record of an id the caller has already validated.
     fn node(&self, id: NodeId) -> &Node {
-        self.nodes.get(id.index())
+        self.nodes.get(id.slot())
     }
 
     fn node_mut(&mut self, id: NodeId) -> &mut Node {
-        self.nodes.get_mut(id.index())
+        self.nodes.get_mut(id.slot())
     }
 }
 
@@ -698,7 +698,7 @@ impl<W: Widget> Spawner<'_, W> {
         self.app
             .handlers
             .column_mut::<E>(len)
-            .get_mut(target.index())
+            .get_mut(target.slot())
             .0
             .push(erased);
         self
@@ -772,7 +772,7 @@ mod tests {
         let old = app.spawn(app.root(), Leaf).id();
         assert!(app.remove(old));
         let new = app.spawn(app.root(), Leaf).id();
-        assert_eq!(new.index(), old.index());
+        assert_eq!(new.slot(), old.slot());
         assert_eq!(new.widget_type(), old.widget_type());
         assert_eq!(new.generation(), old.generation() + 1);
         assert!(app.is_live(new));
@@ -789,12 +789,12 @@ mod tests {
         app.handlers.column_mut::<Poke>(len);
         let id = app.spawn(app.root(), Leaf).id();
         let column = app.handlers.column_of::<Poke>().unwrap();
-        column.get_mut(id.index()).0.push(Box::new(|_, _, _| {}));
-        assert_eq!(column.get(id.index()).0.len(), 1, "spawn grew the column");
+        column.get_mut(id.slot()).0.push(Box::new(|_, _, _| {}));
+        assert_eq!(column.get(id.slot()).0.len(), 1, "spawn grew the column");
         app.remove(id);
         let column = app.handlers.column_of::<Poke>().unwrap();
         assert!(
-            column.get(id.index()).0.is_empty(),
+            column.get(id.slot()).0.is_empty(),
             "remove emptied the slot"
         );
     }
@@ -804,7 +804,7 @@ mod tests {
         let mut app = App::new();
         let id = app.spawn(app.root(), Leaf).id();
         app.remove(id);
-        let node = app.nodes.get(id.index());
+        let node = app.nodes.get(id.slot());
         assert_eq!(node.parent, NodeId::ROOT);
         assert!(node.children.is_empty());
         let column = app.widgets.column_of::<Leaf>().unwrap();
@@ -812,7 +812,7 @@ mod tests {
             app.widgets
                 .store::<Leaf>(column)
                 .unwrap()
-                .get(id.index())
+                .get(id.slot())
                 .is_none()
         );
     }

@@ -83,6 +83,6 @@ impl<'a> Tree<'a> {
 
     /// The node record of an id the caller has already validated.
     fn node(&self, id: NodeId) -> &'a Node {
-        self.nodes.get(id.index())
+        self.nodes.get(id.slot())
     }
 }

@@ -418,3 +418,29 @@ fn spawner_me_is_the_handle_build_receives() {
     let echo = app.spawn(app.root(), EchoBuilder);
     assert!(app.widget::<Echo>(echo).unwrap().0);
 }
+
+// ── slot ────────────────────────────────────────────────────────────────
+
+struct SlotLeaf;
+impl Build for SlotLeaf {
+    type Widget = SlotLeaf;
+}
+impl Widget for SlotLeaf {
+    type Builder = SlotLeaf;
+    fn build(b: SlotLeaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self {
+        b
+    }
+}
+
+#[test]
+fn slot_is_the_arena_index_and_is_reused_after_remove() {
+    let mut app = App::new();
+    assert_eq!(app.root().slot(), 0);
+    let a = app.spawn(app.root(), SlotLeaf);
+    let b = app.spawn(app.root(), SlotLeaf);
+    assert_ne!(a.id().slot(), b.id().slot());
+    assert!(app.remove(a));
+    let c = app.spawn(app.root(), SlotLeaf);
+    assert_eq!(c.id().slot(), a.id().slot(), "the freed slot is reused");
+    assert_ne!(c.id(), a.id(), "but the id is new");
+}
