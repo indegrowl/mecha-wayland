@@ -419,14 +419,14 @@ fn the_same_column_twice_shared_is_fine() {
 }
 
 #[test]
-#[should_panic(expected = "same component twice")]
+#[should_panic(expected = "same place twice")]
 fn the_same_column_shared_and_mutable_panics() {
     let mut app = app();
     let _ = app.query::<(&mut Pos, &Pos)>();
 }
 
 #[test]
-#[should_panic(expected = "same component twice")]
+#[should_panic(expected = "same place twice")]
 fn the_same_column_twice_mutably_panics() {
     let mut app = app();
     let _ = app.query::<(&Size, &mut Pos, &mut Pos)>();

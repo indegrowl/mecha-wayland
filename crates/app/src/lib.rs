@@ -193,7 +193,7 @@ pub use handler::Targets;
 pub use id::{Handle, NodeId};
 pub use message::{Emitted, Event, OnChanged, PostTick, Removed, Signal, Spawned, Tick};
 pub use module::Module;
-pub use query::{CompMut, Comps, CompsMut, Data, Query};
+pub use query::{CompMut, Comps, CompsMut, Data, Query, Res, ResMut};
 pub use resource::{Resource, ResourceMut};
 pub use system::System;
 pub use tree::Tree;
@@ -202,7 +202,7 @@ pub use widgets::{Build, Widget};
 pub mod prelude {
     pub use crate::{
         App, Build, Bundle, CompMut, Component, Comps, CompsMut, Context, Data, Emitted, Event,
-        Handle, Module, NodeId, OnChanged, PostTick, Query, Removed, Resource, ResourceMut, Signal,
-        Spawned, Spawner, System, Targets, Tick, Tree, Widget,
+        Handle, Module, NodeId, OnChanged, PostTick, Query, Removed, Res, ResMut, Resource,
+        ResourceMut, Signal, Spawned, Spawner, System, Targets, Tick, Tree, Widget,
     };
 }

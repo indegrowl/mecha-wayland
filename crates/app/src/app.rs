@@ -335,9 +335,11 @@ impl App {
         self.components.column_mut::<C>().take_changed(slots)
     }
 
-    /// Fetch one or more columns as views: `&C` for a
-    /// [`Comps`](crate::Comps), `&mut C` for a
-    /// [`CompsMut`](crate::CompsMut), or a tuple of up to six of those.
+    /// Fetch one or more columns and resources as views: `&C` for a
+    /// [`Comps`](crate::Comps), `&mut C` for a [`CompsMut`](crate::CompsMut),
+    /// [`Res<R>`](crate::Res) for a `&R`, [`ResMut<R>`](crate::ResMut) for a
+    /// [`ResourceMut`](crate::ResourceMut), or a tuple of up to six of
+    /// those.
     ///
     /// ```
     /// # use app::prelude::*;
@@ -347,11 +349,15 @@ impl App {
     /// # #[derive(Default)]
     /// # struct Rect;
     /// # impl Component for Rect {}
+    /// # #[derive(Default)]
+    /// # struct Windows;
+    /// # impl Resource for Windows {}
     /// # let mut app = App::new();
     /// # app.register_component::<Style>();
     /// # app.register_component::<Rect>();
-    /// let (style, mut rect) = app.query::<(&Style, &mut Rect)>();
-    /// # let _ = (&style, &mut rect);
+    /// # app.init_resource::<Windows>();
+    /// let (style, mut rect, windows) = app.query::<(&Style, &mut Rect, Res<Windows>)>();
+    /// # let _ = (&style, &mut rect, windows);
     /// ```
     ///
     /// Takes `&mut self` even for a read-only query, since one signature
@@ -360,8 +366,10 @@ impl App {
     ///
     /// # Panics
     ///
-    /// If a named type is not registered, or one type appears twice with
-    /// at least one `&mut`. `(&A, &A)` is fine.
+    /// If a named type is not registered or inserted, or one place appears
+    /// twice with at least one `&mut` or `ResMut`. `(&A, &A)` and
+    /// `(Res<A>, Res<A>)` are fine; a type that is both a component and a
+    /// resource is two places.
     pub fn query<Q: Query>(&mut self) -> Q::Out<'_> {
         Q::fetch(Data::new(
             &self.slots,

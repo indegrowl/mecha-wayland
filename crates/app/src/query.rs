@@ -1,10 +1,12 @@
 //! Column views, the write guard, and the `Query` that fetches views.
 
+use std::any::{Any, TypeId};
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut, Index};
 
 use crate::component::{AnyColumn, Column, Components};
-use crate::resource::{ResourceMut, Resources};
+use crate::resource::{Entry, ResourceMut, Resources};
 use crate::slots::Slots;
 use crate::{Component, NodeId, Resource};
 
@@ -224,13 +226,24 @@ mod sealed {
     pub trait Sealed {}
 }
 
+/// Names a resource inside a query, shared: yields `&R`. A lifetime-free
+/// marker so it fits a turbofish. Plain `&R` cannot be an element: a
+/// blanket impl for resources would overlap the one for components,
+/// since a type may be both.
+pub struct Res<R: Resource>(PhantomData<fn() -> R>);
+
+/// Names a resource inside a query, exclusive: yields a [`ResourceMut`].
+pub struct ResMut<R: Resource>(PhantomData<fn() -> R>);
+
 /// What [`App::query`](crate::App::query) fetches: `&C` for a
-/// [`Comps`], `&mut C` for a [`CompsMut`], or a tuple of one to six of
-/// those for a tuple of views. Sealed; the impls here are the whole set.
+/// [`Comps`], `&mut C` for a [`CompsMut`], [`Res<R>`] for a `&R`,
+/// [`ResMut<R>`] for a [`ResourceMut`], or a tuple of one to six of those
+/// for a tuple of views. Sealed; the impls here are the whole set.
 ///
-/// Aliasing follows Rust's rule at column granularity: one type may
-/// appear twice only if both occurrences are `&C`. Anything else panics,
-/// since the type system cannot see that `A` is `A`.
+/// Aliasing follows Rust's rule per place, a column or a resource: one
+/// place may appear twice only if every occurrence is shared. Anything
+/// else panics, since the type system cannot see that `A` is `A`. A type
+/// that is both a component and a resource is two places.
 pub trait Query: sealed::Sealed {
     type Out<'a>;
 
@@ -238,26 +251,56 @@ pub trait Query: sealed::Sealed {
     fn fetch<'a>(data: Data<'a>) -> Self::Out<'a>;
 }
 
-/// One column of a query. Only the tuple impls of [`Query`] use it.
+/// Where an element's data lives: a component column by number, or a
+/// resource entry by key.
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Place {
+    Column(u32),
+    Resource(TypeId),
+}
+
+/// One element of a query. Only the tuple impls of [`Query`] use it.
 #[doc(hidden)]
 pub trait Element: sealed::Sealed {
     const MUTABLE: bool;
     type Out<'a>;
-    fn column(data: &Data<'_>) -> u32;
+    /// Panics if the type is not registered or inserted.
+    fn place(data: &Data<'_>) -> Place;
     fn view<'a>(fetched: Fetched<'a>) -> Self::Out<'a>;
 }
 
-/// One column, fetched shared or exclusive, with the slots to validate
-/// ids against. The hand-off from `fetch_columns` to [`Element::view`].
-#[doc(hidden)]
-pub struct Fetched<'a> {
-    slots: &'a Slots,
-    column: Col<'a>,
+/// A shared or exclusive borrow of one erased column or entry.
+enum Borrowed<'a, T: ?Sized> {
+    Shared(&'a T),
+    Exclusive(&'a mut T),
 }
 
-enum Col<'a> {
-    Shared(&'a dyn AnyColumn),
-    Exclusive(&'a mut dyn AnyColumn),
+impl<'a, T: ?Sized> Borrowed<'a, T> {
+    fn shared(self) -> &'a T {
+        match self {
+            Borrowed::Shared(shared) => shared,
+            Borrowed::Exclusive(exclusive) => exclusive,
+        }
+    }
+}
+
+/// One element's data, fetched. The hand-off from `fetch_places` to
+/// [`Element::view`]. A struct around a private enum, so the crate's
+/// private types stay out of the public interface.
+#[doc(hidden)]
+pub struct Fetched<'a> {
+    inner: Inner<'a>,
+}
+
+/// A column comes with the slots its view validates ids against; a
+/// resource has no ids to validate.
+enum Inner<'a> {
+    Column {
+        slots: &'a Slots,
+        col: Borrowed<'a, dyn AnyColumn + 'a>,
+    },
+    Resource(Borrowed<'a, dyn Any>),
 }
 
 impl<C: Component> sealed::Sealed for &C {}
@@ -265,23 +308,20 @@ impl<C: Component> Element for &C {
     const MUTABLE: bool = false;
     type Out<'a> = Comps<'a, C>;
 
-    fn column(data: &Data<'_>) -> u32 {
-        data.components.column_of::<C>()
+    fn place(data: &Data<'_>) -> Place {
+        Place::Column(data.components.column_of::<C>())
     }
 
     fn view<'a>(fetched: Fetched<'a>) -> Comps<'a, C> {
-        let erased: &'a dyn AnyColumn = match fetched.column {
-            Col::Shared(shared) => shared,
-            Col::Exclusive(exclusive) => &*exclusive,
+        let Inner::Column { slots, col } = fetched.inner else {
+            unreachable!("a component element is fetched from a column")
         };
-        let column = erased
+        let column = col
+            .shared()
             .as_any()
             .downcast_ref::<Column<C>>()
             .expect("a column holds its registered type");
-        Comps {
-            slots: fetched.slots,
-            column,
-        }
+        Comps { slots, column }
     }
 }
 
@@ -290,22 +330,65 @@ impl<C: Component> Element for &mut C {
     const MUTABLE: bool = true;
     type Out<'a> = CompsMut<'a, C>;
 
-    fn column(data: &Data<'_>) -> u32 {
-        data.components.column_of::<C>()
+    fn place(data: &Data<'_>) -> Place {
+        Place::Column(data.components.column_of::<C>())
     }
 
     fn view<'a>(fetched: Fetched<'a>) -> CompsMut<'a, C> {
-        let Col::Exclusive(erased) = fetched.column else {
-            unreachable!("a `&mut` element is always fetched exclusively")
+        let Inner::Column {
+            slots,
+            col: Borrowed::Exclusive(erased),
+        } = fetched.inner
+        else {
+            unreachable!("a `&mut` element is always fetched exclusively from a column")
         };
         let column = erased
             .as_any_mut()
             .downcast_mut::<Column<C>>()
             .expect("a column holds its registered type");
-        CompsMut {
-            slots: fetched.slots,
-            column,
-        }
+        CompsMut { slots, column }
+    }
+}
+
+impl<R: Resource> sealed::Sealed for Res<R> {}
+impl<R: Resource> Element for Res<R> {
+    const MUTABLE: bool = false;
+    type Out<'a> = &'a R;
+
+    fn place(data: &Data<'_>) -> Place {
+        Place::Resource(data.resources.type_of::<R>())
+    }
+
+    fn view<'a>(fetched: Fetched<'a>) -> &'a R {
+        let Inner::Resource(entry) = fetched.inner else {
+            unreachable!("a resource element is fetched from an entry")
+        };
+        &entry
+            .shared()
+            .downcast_ref::<Entry<R>>()
+            .expect("an entry holds its type")
+            .value
+    }
+}
+
+impl<R: Resource> sealed::Sealed for ResMut<R> {}
+impl<R: Resource> Element for ResMut<R> {
+    const MUTABLE: bool = true;
+    type Out<'a> = ResourceMut<'a, R>;
+
+    fn place(data: &Data<'_>) -> Place {
+        Place::Resource(data.resources.type_of::<R>())
+    }
+
+    fn view<'a>(fetched: Fetched<'a>) -> ResourceMut<'a, R> {
+        let Inner::Resource(Borrowed::Exclusive(erased)) = fetched.inner else {
+            unreachable!("a `ResMut` element is always fetched exclusively from an entry")
+        };
+        ResourceMut::new(
+            erased
+                .downcast_mut::<Entry<R>>()
+                .expect("an entry holds its type"),
+        )
     }
 }
 
@@ -325,73 +408,129 @@ impl<C: Component> Query for &mut C {
     }
 }
 
-/// Borrow `N` columns at once, shared or exclusive as `want` says, with
-/// no aliasing: a column wanted exclusively appears once; a column wanted
+impl<R: Resource> Query for Res<R> {
+    type Out<'a> = &'a R;
+
+    fn fetch<'a>(data: Data<'a>) -> &'a R {
+        <(Self,) as Query>::fetch(data).0
+    }
+}
+
+impl<R: Resource> Query for ResMut<R> {
+    type Out<'a> = ResourceMut<'a, R>;
+
+    fn fetch<'a>(data: Data<'a>) -> ResourceMut<'a, R> {
+        <(Self,) as Query>::fetch(data).0
+    }
+}
+
+/// Borrow `N` places at once, shared or exclusive as `want` says, with
+/// no aliasing: a place wanted exclusively appears once; a place wanted
 /// shared may appear any number of times.
 ///
-/// Sorts the elements by column and splits the store slice front to back,
-/// so every borrow is a disjoint sub-slice and no unsafe is needed.
+/// Columns: sort the column elements by column and split the store
+/// slice front to back, so every borrow is a disjoint sub-slice.
+/// Resources: one pass over the map, handing each entry to the one
+/// exclusive element that wants it, or sharing it among the elements
+/// that do. A few `TypeId` compares per resource; no unsafe either way.
 ///
 /// # Panics
 ///
-/// If one column appears twice and at least one of them is exclusive.
-fn fetch_columns<'a, const N: usize>(
+/// If one place appears twice and at least one of them is exclusive.
+fn fetch_places<'a, const N: usize>(
     slots: &'a Slots,
     stores: &'a mut [Box<dyn AnyColumn>],
-    want: [(u32, bool); N],
+    resources: &'a mut Resources,
+    want: [(Place, bool); N],
 ) -> [Fetched<'a>; N] {
     for i in 0..N {
         for j in (i + 1)..N {
             assert!(
                 want[i].0 != want[j].0 || !(want[i].1 || want[j].1),
-                "a query names the same component twice, at least once with `&mut`"
+                "a query names the same place twice, at least once mutably"
             );
         }
     }
 
-    let mut order: [usize; N] = std::array::from_fn(|i| i);
-    order.sort_unstable_by_key(|&i| want[i].0);
-
     let mut out: [Option<Fetched<'a>>; N] = [const { None }; N];
+
+    // Column elements first, by column; resource elements after them.
+    let mut order: [usize; N] = std::array::from_fn(|i| i);
+    order.sort_unstable_by_key(|&i| match want[i].0 {
+        Place::Column(column) => (0, column),
+        Place::Resource(_) => (1, 0),
+    });
+    let columns = order
+        .iter()
+        .take_while(|&&i| matches!(want[i].0, Place::Column(_)))
+        .count();
+
     let mut rest: &'a mut [Box<dyn AnyColumn>] = stores;
     let mut consumed = 0usize; // columns already split off the front
     let mut k = 0;
-    while k < N {
-        let column = want[order[k]].0 as usize;
-        let (_, tail) = std::mem::take(&mut rest).split_at_mut(column - consumed);
+    while k < columns {
+        let Place::Column(column) = want[order[k]].0 else {
+            unreachable!("column elements sort first")
+        };
+        let (_, tail) = std::mem::take(&mut rest).split_at_mut(column as usize - consumed);
         let (this, tail) = tail
             .split_first_mut()
             .expect("a registered column is in range");
         rest = tail;
-        consumed = column + 1;
+        consumed = column as usize + 1;
 
         // Elements on this column are contiguous in `order`.
         let mut end = k + 1;
-        while end < N && want[order[end]].0 as usize == column {
+        while end < columns && want[order[end]].0 == Place::Column(column) {
             end += 1;
         }
 
         if want[order[k]].1 {
             debug_assert_eq!(end, k + 1, "an exclusive column has one element");
             out[order[k]] = Some(Fetched {
-                slots,
-                column: Col::Exclusive(&mut **this),
+                inner: Inner::Column {
+                    slots,
+                    col: Borrowed::Exclusive(&mut **this),
+                },
             });
         } else {
             let shared: &'a dyn AnyColumn = &**this;
             for e in k..end {
                 out[order[e]] = Some(Fetched {
-                    slots,
-                    column: Col::Shared(shared),
+                    inner: Inner::Column {
+                        slots,
+                        col: Borrowed::Shared(shared),
+                    },
                 });
             }
         }
         k = end;
     }
+
+    for (type_id, entry) in resources.entries_mut() {
+        let place = Place::Resource(*type_id);
+        let erased: &'a mut dyn Any = &mut **entry;
+        match (0..N).find(|&i| want[i].0 == place && want[i].1) {
+            Some(i) => {
+                out[i] = Some(Fetched {
+                    inner: Inner::Resource(Borrowed::Exclusive(erased)),
+                });
+            }
+            None => {
+                let shared: &'a dyn Any = &*erased;
+                for i in (0..N).filter(|&i| want[i].0 == place) {
+                    out[i] = Some(Fetched {
+                        inner: Inner::Resource(Borrowed::Shared(shared)),
+                    });
+                }
+            }
+        }
+    }
+
     out.map(|fetched| fetched.expect("every element was fetched"))
 }
 
-/// `Query` for a tuple of `Element`s: fetch every column in one go, then
+/// `Query` for a tuple of `Element`s: fetch every place in one go, then
 /// build each view.
 macro_rules! tuple_query {
     ($($T:ident),+) => {
@@ -402,9 +541,9 @@ macro_rules! tuple_query {
 
             #[allow(non_snake_case)]
             fn fetch<'a>(data: Data<'a>) -> Self::Out<'a> {
-                let want = [$(($T::column(&data), $T::MUTABLE)),+];
-                let Data { slots, components, resources: _ } = data;
-                let [$($T,)+] = fetch_columns(slots, components.stores_mut(), want);
+                let want = [$(($T::place(&data), $T::MUTABLE)),+];
+                let Data { slots, components, resources } = data;
+                let [$($T,)+] = fetch_places(slots, components.stores_mut(), resources, want);
                 ($($T::view($T),)+)
             }
         }

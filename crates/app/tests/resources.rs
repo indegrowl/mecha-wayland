@@ -290,3 +290,109 @@ fn split_lends_the_tree_a_column_and_a_resource_together() {
         vec![a.id(), b.id()]
     );
 }
+
+// ── queries over both arenas ────────────────────────────────────────────
+
+#[test]
+fn a_query_mixes_columns_and_resources() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(1));
+    app.insert_resource(Title("t".into()));
+    // Inserts flag; start clean so the query's own effect is visible.
+    app.take_resource_changed::<Score>();
+    app.take_resource_changed::<Title>();
+    let a = app.spawn(app.root(), Leaf);
+    {
+        let (mut layout, score, mut title) =
+            app.query::<(&mut Layout, Res<Score>, ResMut<Title>)>();
+        layout.get_mut(a).unwrap().0 = score.0 + 1;
+        title.0.push('!');
+    }
+    assert_eq!(app.component::<Layout>(a), Some(&Layout(2)));
+    assert_eq!(app.resource::<Title>().0, "t!");
+    assert_eq!(
+        app.take_changed::<Layout>().collect::<Vec<_>>(),
+        vec![a.id()]
+    );
+    assert!(app.take_resource_changed::<Title>());
+    assert!(
+        !app.take_resource_changed::<Score>(),
+        "a read through Res does not flag"
+    );
+}
+
+#[test]
+fn a_single_resource_element_is_a_query() {
+    let mut app = App::new();
+    app.insert_resource(Score(4));
+    assert_eq!(app.query::<Res<Score>>(), &Score(4));
+    app.query::<ResMut<Score>>().0 = 5;
+    assert_eq!(app.resource::<Score>(), &Score(5));
+}
+
+#[test]
+fn a_resource_may_repeat_when_every_occurrence_is_shared() {
+    let mut app = App::new();
+    app.insert_resource(Score(4));
+    let (first, second) = app.query::<(Res<Score>, Res<Score>)>();
+    assert_eq!(first, second);
+}
+
+#[test]
+#[should_panic(expected = "same place twice")]
+fn a_resource_shared_and_mutable_panics() {
+    let mut app = App::new();
+    app.insert_resource(Score(0));
+    let _ = app.query::<(ResMut<Score>, Res<Score>)>();
+}
+
+#[test]
+#[should_panic(expected = "same place twice")]
+fn a_resource_twice_mutably_panics() {
+    let mut app = App::new();
+    app.insert_resource(Score(0));
+    let _ = app.query::<(ResMut<Score>, ResMut<Score>)>();
+}
+
+#[test]
+#[should_panic(expected = "not inserted")]
+fn a_query_naming_an_absent_resource_panics() {
+    let mut app = App::new();
+    app.insert_resource(Score(0));
+    let _ = app.query::<(Res<Score>, ResMut<Never>)>();
+}
+
+#[test]
+fn a_type_that_is_both_component_and_resource_is_two_places() {
+    #[derive(Default, Debug, PartialEq)]
+    struct Both(u32);
+    impl Component for Both {}
+    impl Resource for Both {}
+
+    let mut app = App::new();
+    app.register_component::<Both>();
+    app.insert_resource(Both(10));
+    let root = app.root();
+    {
+        let (mut column, mut single) = app.query::<(&mut Both, ResMut<Both>)>();
+        column.get_mut(root).unwrap().0 = 1;
+        single.0 = 11;
+    }
+    assert_eq!(app.component::<Both>(root), Some(&Both(1)));
+    assert_eq!(app.resource::<Both>(), &Both(11));
+}
+
+#[test]
+fn data_queries_resources_beside_the_tree() {
+    let mut app = App::new();
+    app.register_component::<Layout>();
+    app.insert_resource(Score(3));
+    let a = app.spawn(app.root(), Leaf);
+    let (tree, mut data) = app.split();
+    let parent = tree.parent(a).unwrap();
+    let (mut layout, score) = data.query::<(&mut Layout, Res<Score>)>();
+    layout.get_mut(parent).unwrap().0 = score.0;
+    drop((layout, score));
+    assert_eq!(data.component::<Layout>(parent), Some(&Layout(3)));
+}
