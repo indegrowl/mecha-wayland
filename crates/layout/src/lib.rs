@@ -1,5 +1,68 @@
 #![forbid(unsafe_code)]
-//! The layout module. Crate docs arrive in a later task.
+//! The layout module: `LayoutStyle` and `Measure` in, `Layout` out,
+//! through taffy's flexbox and block algorithms over the core's columns.
+//!
+//! # Model
+//!
+//! - Every node carries a [`LayoutStyle`], the box it asks for, and a
+//!   [`Measure`], how a leaf sizes itself under the constraints it is
+//!   offered. Both are written by whoever owns the node.
+//! - A node marked with [`LayoutRoot`]`(true)` is the top of one tree to
+//!   lay out. Its subtree is laid out in its coordinates, the root's box
+//!   at the origin, sized by the root's own style. A node under no root is
+//!   never laid out.
+//! - Every node carries a [`Layout`], the resolved box in whole pixels,
+//!   written by the pass only when it changed, so `OnChanged<Layout>`
+//!   names exactly the boxes that moved.
+//! - The pass runs on `PostTick`, ahead of the core's `OnChanged` drains,
+//!   and takes the change records for the three inputs itself, so
+//!   `OnChanged<LayoutStyle>`, `OnChanged<Measure>` and
+//!   `OnChanged<LayoutRoot>` never fire while [`LayoutModule`] is
+//!   installed. A spawn or removal dirties the parent's root. Only dirty
+//!   roots are recomputed; taffy's cache skips unchanged subtrees.
+//! - [`LayoutDone`] is signalled once per tick, after the pass, naming
+//!   the roots recomputed; empty when none was.
+//!
+//! # When a change is seen
+//!
+//! Everything written between ticks, and everything written by a `Tick`
+//! system or a handler `Tick` caused, is laid out in the next `PostTick`.
+//! A spawn or removal queued by a `Tick` system, or a write by a system
+//! on a signal `Tick` queued, arrives after `PostTick` and is laid out the
+//! tick after. Nothing is lost.
+//!
+//! # Quick start
+//!
+//! ```
+//! use app::prelude::*;
+//! use geometry::Rect;
+//! use layout::prelude::*;
+//!
+//! # struct Leaf;
+//! # impl Build for Leaf { type Widget = Leaf; }
+//! # impl Widget for Leaf {
+//! #     type Builder = Leaf;
+//! #     fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self { b }
+//! # }
+//! let mut app = App::new();
+//! app.add_module(LayoutModule);
+//!
+//! // A window-sized root, and a box inside it.
+//! let window = app.spawn_with(
+//!     app.root(),
+//!     Leaf,
+//!     (LayoutRoot(true), LayoutStyle::default().size(px(200.0), px(100.0))),
+//! );
+//! let panel = app.spawn_with(window, Leaf, (LayoutStyle::default().size(px(50.0), percent(100.0)),));
+//!
+//! app.tick();
+//! assert_eq!(app.component::<Layout>(panel).unwrap().rect, Rect::new(0.0, 0.0, 50.0, 100.0));
+//!
+//! // Restyle between ticks; the next tick lays it out.
+//! app.component_mut::<LayoutStyle>(panel).unwrap().width = px(80.0);
+//! app.tick();
+//! assert_eq!(app.component::<Layout>(panel).unwrap().rect.width(), 80.0);
+//! ```
 
 mod style;
 mod tree;
@@ -83,6 +146,33 @@ impl Constraints {
 /// what a widget that rewrote its text wants. Taffy caches what it
 /// measured, so the closure runs a few times per pass for a node whose
 /// constraints it has not seen, and not at all for a cached one.
+///
+/// ```
+/// use geometry::Size;
+/// use layout::{Available, Constraints, Measure};
+///
+/// // A line of text 8 pixels per glyph, 12 high, that wraps at the width
+/// // it is offered.
+/// let text = String::from("hello world");
+/// let measure = Measure::with(move |c: Constraints| {
+///     let natural = text.len() as f32 * 8.0;
+///     let width = match (c.known_width, c.available_width) {
+///         (Some(w), _) | (None, Available::Definite(w)) => w.min(natural),
+///         _ => natural,
+///     };
+///     let lines = (natural / width).ceil().max(1.0);
+///     Size::new(width, lines * 12.0)
+/// });
+/// let wide = Constraints {
+///     known_width: None,
+///     known_height: None,
+///     available_width: Available::MaxContent,
+///     available_height: Available::MaxContent,
+/// };
+/// assert_eq!(measure.measure(wide), Size::new(88.0, 12.0));
+/// let narrow = Constraints { available_width: Available::Definite(44.0), ..wide };
+/// assert_eq!(measure.measure(narrow), Size::new(44.0, 24.0));
+/// ```
 #[derive(Default)]
 pub struct Measure(Option<Box<dyn Fn(Constraints) -> Size>>);
 

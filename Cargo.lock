@@ -39,6 +39,8 @@ name = "mecha-wayland"
 version = "0.1.0"
 dependencies = [
  "app",
+ "geometry",
+ "layout",
 ]
 
 [[package]]

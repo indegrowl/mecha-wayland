@@ -7,6 +7,8 @@ edition = "2024"
 
 [dependencies]
 app.workspace = true
+geometry.workspace = true
+layout.workspace = true
 
 [workspace]
 members = ["crates/app", "crates/geometry", "crates/layout"]
