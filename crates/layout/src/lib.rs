@@ -5,7 +5,7 @@ mod style;
 
 use std::fmt;
 
-use app::{App, Component, Module, NodeId, PostTick, Resource, Signal};
+use app::{App, Component, Module, NodeId, PostTick, Removed, Resource, Signal, Spawned};
 use geometry::{Insets, Rect, Size};
 use taffy::AvailableSpace;
 use taffy::geometry::Size as TSize;
@@ -170,7 +170,7 @@ impl Layout {
 /// the box before rounding, read back by the rounding walk so rounding
 /// errors do not accumulate down the tree. Both persist across ticks
 /// because a cached subtree is not revisited.
-// Read from Task 6; the allow goes with it.
+// `unrounded` is read from Task 6; the allow goes with it.
 #[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct Scratch {
@@ -228,7 +228,9 @@ impl Module for LayoutModule {
             .register_component::<LayoutRoot>()
             .register_component::<Layout>()
             .register_component::<Scratch>()
-            .init_resource::<DirtyRoots>();
+            .init_resource::<DirtyRoots>()
+            .system(on_spawned)
+            .system(on_removed);
     }
 }
 
@@ -242,13 +244,59 @@ fn pass(app: &mut App, _: &PostTick) {
     app.signal(LayoutDone { roots });
 }
 
-/// Take the three input records. Invalidating each id arrives in a later
-/// task; for now the records are taken so the core's drains find them
-/// empty.
+/// Take the three input records and invalidate every id in them. The
+/// iterators borrow the app, so each is collected before invalidating.
 fn drain(app: &mut App) {
-    app.take_changed::<LayoutStyle>().for_each(drop);
-    app.take_changed::<Measure>().for_each(drop);
-    app.take_changed::<LayoutRoot>().for_each(drop);
+    let styles: Vec<NodeId> = app.take_changed::<LayoutStyle>().collect();
+    let measures: Vec<NodeId> = app.take_changed::<Measure>().collect();
+    let roots: Vec<NodeId> = app.take_changed::<LayoutRoot>().collect();
+    for id in styles.into_iter().chain(measures).chain(roots) {
+        invalidate(app, id);
+    }
+}
+
+/// Clear taffy's cache from `id` up through its ancestors, stopping after
+/// the first node marked as a root, which is pushed onto `DirtyRoots`.
+/// Reaching the app root without a mark pushes nothing: the node is
+/// outside every root. A stale `id` does nothing. Idempotent, so a subtree
+/// that signals children before parent walks the same path harmlessly.
+fn invalidate(app: &mut App, id: NodeId) {
+    let mut at = id;
+    loop {
+        if let Some(mut scratch) = app.component_mut::<Scratch>(at) {
+            scratch.cache.clear();
+        }
+        if app.component::<LayoutRoot>(at).is_some_and(|m| m.0) {
+            mark_dirty(app, at);
+            return;
+        }
+        match app.parent(at) {
+            Some(parent) if parent != at => at = parent,
+            _ => return,
+        }
+    }
+}
+
+fn mark_dirty(app: &mut App, root: NodeId) {
+    let mut dirty = app.resource_mut::<DirtyRoots>();
+    if !dirty.0.contains(&root) {
+        dirty.0.push(root);
+    }
+}
+
+/// A new node: its own cache is empty already; what changed is its
+/// parent's child list.
+fn on_spawned(app: &mut App, s: &Spawned) {
+    invalidate(app, s.parent);
+}
+
+/// A removed subtree: the parent's child list changed, if the parent is
+/// still there. A stale parent was removed too, and its own `Removed`
+/// does the work.
+fn on_removed(app: &mut App, r: &Removed) {
+    if app.is_live(r.parent) {
+        invalidate(app, r.parent);
+    }
 }
 
 /// The dirty roots that are still live and still marked, in marking

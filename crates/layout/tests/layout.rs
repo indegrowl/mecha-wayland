@@ -62,8 +62,6 @@ fn app() -> App {
 
 /// A root of fixed size, a flex row with children aligned to the start so
 /// a leaf keeps the height it asked for.
-// Used from Task 5 or 6; the allow goes with it.
-#[allow(dead_code)]
 fn root_style(width: f32, height: f32) -> LayoutStyle {
     LayoutStyle::default()
         .size(px(width), px(height))
@@ -71,8 +69,6 @@ fn root_style(width: f32, height: f32) -> LayoutStyle {
 }
 
 /// Spawn a marked root under the app root.
-// Used from Task 5 or 6; the allow goes with it.
-#[allow(dead_code)]
 fn root(app: &mut App, width: f32, height: f32) -> NodeId {
     app.spawn_with(
         app.root(),
@@ -82,8 +78,6 @@ fn root(app: &mut App, width: f32, height: f32) -> NodeId {
     .id()
 }
 
-// Used from Task 5 or 6; the allow goes with it.
-#[allow(dead_code)]
 fn child(app: &mut App, parent: NodeId, style: LayoutStyle) -> NodeId {
     app.spawn_with(parent, Leaf, (style,)).id()
 }
@@ -94,8 +88,6 @@ fn rect(app: &App, id: NodeId) -> Rect {
     app.component::<Layout>(id).unwrap().rect
 }
 
-// Used from Task 5 or 6; the allow goes with it.
-#[allow(dead_code)]
 fn fixed(w: f32, h: f32) -> LayoutStyle {
     LayoutStyle::default().size(px(w), px(h))
 }
@@ -176,4 +168,117 @@ fn layout_content_is_inside_padding_and_border() {
 /// Any id will do for the signal's `recomputed`; the app root is always live.
 fn tiny_id() -> NodeId {
     App::new().root()
+}
+
+// ── dirtiness ───────────────────────────────────────────────────────────
+
+#[test]
+fn a_style_write_under_a_root_dirties_that_root_once() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r]], "the spawn dirtied the root");
+
+    app.component_mut::<LayoutStyle>(a).unwrap().width = px(80.0);
+    app.component_mut::<LayoutStyle>(b).unwrap().width = px(80.0);
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r]], "two writes, one root, once");
+
+    app.tick();
+    assert_eq!(take_done(), vec![vec![]], "nothing pending");
+}
+
+#[test]
+fn a_measure_write_dirties_the_root() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, LayoutStyle::default());
+    app.tick();
+    take_done();
+    *app.component_mut::<Measure>(a).unwrap() = Measure::fixed(Size::new(30.0, 20.0));
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r]]);
+}
+
+#[test]
+fn a_write_outside_every_root_dirties_nothing() {
+    let mut app = app();
+    let stray = app.spawn(app.root(), Leaf).id();
+    app.tick();
+    take_done();
+    app.component_mut::<LayoutStyle>(stray).unwrap().width = px(10.0);
+    app.tick();
+    assert_eq!(take_done(), vec![vec![]]);
+}
+
+#[test]
+fn two_roots_are_dirtied_independently() {
+    let mut app = app();
+    let r1 = root(&mut app, 300.0, 100.0);
+    let r2 = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r1, fixed(50.0, 40.0));
+    let _b = child(&mut app, r2, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(
+        take_done(),
+        vec![vec![r1, r2]],
+        "both marked, in first-write order"
+    );
+
+    app.component_mut::<LayoutStyle>(a).unwrap().width = px(80.0);
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r1]]);
+}
+
+#[test]
+fn spawn_and_remove_under_a_root_dirty_it() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let a = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    take_done();
+
+    let b = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r]], "spawn");
+
+    assert!(app.remove(a));
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r]], "remove");
+
+    assert!(app.remove(b));
+    app.tick();
+    assert_eq!(take_done(), vec![vec![r]], "remove the last child");
+}
+
+#[test]
+fn removing_a_whole_root_dirties_nothing_and_does_not_panic() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let _a = child(&mut app, r, fixed(50.0, 40.0));
+    app.tick();
+    take_done();
+    assert!(app.remove(r));
+    app.tick();
+    assert_eq!(
+        take_done(),
+        vec![vec![]],
+        "the root is gone, nothing to recompute"
+    );
+}
+
+#[test]
+fn marking_a_node_as_a_root_makes_it_its_own_dirty_root() {
+    let mut app = app();
+    let later = app
+        .spawn_with(app.root(), Leaf, (root_style(200.0, 100.0),))
+        .id();
+    let _inner = child(&mut app, later, fixed(50.0, 40.0));
+    app.tick();
+    assert_eq!(take_done(), vec![vec![]], "not a root yet");
+    app.component_mut::<LayoutRoot>(later).unwrap().0 = true;
+    app.tick();
+    assert_eq!(take_done(), vec![vec![later]]);
 }
