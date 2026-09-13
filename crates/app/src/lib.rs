@@ -18,36 +18,46 @@
 //! - A [`Component`] is per-node data outside the widget, one value of
 //!   every registered type on every node, written through a guard that
 //!   records the node as changed.
+//! - A [`Resource`] is app-wide data, one value per type, inserted by
+//!   value and written through a guard that records it as changed.
+//!   [`App::query`] fetches columns and resources together, naming
+//!   components as `&C` and `&mut C` and resources as [`Res`] and
+//!   [`ResMut`]; [`App::fetch`] is the same query at one node.
 //! - A [`Signal`] is an app-wide message; a [`System`] is a plain function
 //!   run for every signal of its type. An [`Event`] is a node-level
 //!   message sent to a list of nodes; a handler is a closure a widget's
 //!   build attached with [`Spawner::on`], run with a [`Context`] over its
-//!   owner. Every emit is followed by an [`Emitted`] signal.
+//!   owner, which queues and never flushes. Every emit is followed by an
+//!   [`Emitted`] signal.
 //! - Nothing runs when a message is sent. [`App::flush`] drains every
 //!   event, runs one signal, and repeats. [`App::tick`] sends [`Tick`] and
 //!   [`PostTick`] and flushes; [`App::run`] hands the app to the runner.
-//! - A [`Module`] installs components, systems and the runner.
-//!   [`OnChanged`] events come from the `PostTick` drain each
-//!   registration installs.
+//! - A [`Module`] installs components, resources, systems and the runner.
+//!   [`OnChanged`] comes from the `PostTick` drain each registration or
+//!   first insert installs: an event for a component, a signal for a
+//!   resource.
 //!
 //! # Failure
 //!
 //! Reads return `None` for a stale id or a wrong widget type.
 //! [`App::remove`] returns `false` for a stale id. Panics are setup bugs:
 //! spawning under a dead parent, removing the root, a handler on a stale
-//! target, a second runner, a component registered twice or never.
+//! target, a second runner, a component registered twice or never, a
+//! resource read before it is inserted, a fetch of a stale id.
 //! Everything at run time skips and continues: a stale event target, a
 //! signal with no systems, a handler whose owner is gone.
 //!
-//! The one run-time panic is [`Context::me`]: it panics if a handler
-//! removed its own owner, or an ancestor of it, earlier in the same call.
-//! [`App::remove`] runs immediately, so that is a caller bug, not queued
-//! work; a handler whose owner was already removed before it runs is
-//! skipped instead, never called.
+//! The one run-time panic is [`Context::me`], and [`Context::fetch`]
+//! under the same condition: it panics if a handler removed its own
+//! owner, or an ancestor of it, earlier in the same call. [`App::remove`]
+//! runs immediately, so that is a caller bug, not queued work; a handler
+//! whose owner was already removed before it runs is skipped instead,
+//! never called.
 //!
-//! Component calls add four more caller-bug panics: registering a type
-//! twice, using a type that was never registered, indexing a view with a
-//! stale id, and a query that names one type twice with a `&mut`.
+//! Data calls add four more caller-bug panics: registering a component
+//! twice, using a component or resource that was never registered or
+//! inserted, indexing a view with a stale id, and a query or fetch that
+//! names one place twice with a `&mut` or `ResMut`.
 //!
 //! # Components
 //!
@@ -90,6 +100,38 @@
 //!     app.take_changed::<Depth>().collect::<Vec<_>>(),
 //!     vec![a.id(), b.id()]
 //! );
+//! ```
+//!
+//! # Resources
+//!
+//! App-wide data outside the tree: one value per [`Resource`] type,
+//! inserted with [`App::insert_resource`] or, for a `Default` type,
+//! [`App::init_resource`]. Reads are plain references; writes go through
+//! a [`ResourceMut`] guard whose first `DerefMut` records the resource as
+//! changed, and each tick's `PostTick` drain turns that record into one
+//! [`OnChanged<R>`](OnChanged) signal. A query names resources beside
+//! components with [`Res`] and [`ResMut`]. Handlers and builds reach
+//! resources through [`Context`] and [`Spawner`], and hold several guards
+//! at once through their `fetch`.
+//!
+//! ```
+//! use app::prelude::*;
+//!
+//! #[derive(Default, PartialEq, Debug)]
+//! struct Frame(u64);
+//! impl Resource for Frame {}
+//!
+//! fn advance(app: &mut App, _: &Tick) {
+//!     app.resource_mut::<Frame>().0 += 1;
+//! }
+//! fn report(app: &mut App, _: &OnChanged<Frame>) {
+//!     assert_eq!(app.resource::<Frame>(), &Frame(1));
+//! }
+//!
+//! let mut app = App::new();
+//! app.init_resource::<Frame>().system(advance).system(report);
+//! app.tick();
+//! assert_eq!(app.query::<Res<Frame>>(), &Frame(1));
 //! ```
 //!
 //! # Quick start
