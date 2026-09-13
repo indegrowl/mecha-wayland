@@ -170,6 +170,8 @@ impl Layout {
 /// the box before rounding, read back by the rounding walk so rounding
 /// errors do not accumulate down the tree. Both persist across ticks
 /// because a cached subtree is not revisited.
+// Read from Task 6; the allow goes with it.
+#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) cache: taffy::tree::Cache,

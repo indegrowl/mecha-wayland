@@ -62,6 +62,8 @@ fn app() -> App {
 
 /// A root of fixed size, a flex row with children aligned to the start so
 /// a leaf keeps the height it asked for.
+// Used from Task 5 or 6; the allow goes with it.
+#[allow(dead_code)]
 fn root_style(width: f32, height: f32) -> LayoutStyle {
     LayoutStyle::default()
         .size(px(width), px(height))
@@ -69,6 +71,8 @@ fn root_style(width: f32, height: f32) -> LayoutStyle {
 }
 
 /// Spawn a marked root under the app root.
+// Used from Task 5 or 6; the allow goes with it.
+#[allow(dead_code)]
 fn root(app: &mut App, width: f32, height: f32) -> NodeId {
     app.spawn_with(
         app.root(),
@@ -78,18 +82,26 @@ fn root(app: &mut App, width: f32, height: f32) -> NodeId {
     .id()
 }
 
+// Used from Task 5 or 6; the allow goes with it.
+#[allow(dead_code)]
 fn child(app: &mut App, parent: NodeId, style: LayoutStyle) -> NodeId {
     app.spawn_with(parent, Leaf, (style,)).id()
 }
 
+// Used from Task 5 or 6; the allow goes with it.
+#[allow(dead_code)]
 fn rect(app: &App, id: NodeId) -> Rect {
     app.component::<Layout>(id).unwrap().rect
 }
 
+// Used from Task 5 or 6; the allow goes with it.
+#[allow(dead_code)]
 fn fixed(w: f32, h: f32) -> LayoutStyle {
     LayoutStyle::default().size(px(w), px(h))
 }
 
+// Used from Task 5 or 6; the allow goes with it.
+#[allow(dead_code)]
 fn sorted(mut v: Vec<NodeId>) -> Vec<NodeId> {
     v.sort_by_key(|id| id.slot());
     v
