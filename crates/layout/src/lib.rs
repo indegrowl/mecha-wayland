@@ -257,16 +257,24 @@ impl Layout {
 // Private state
 // ---------------------------------------------------------------------------
 
-/// The pass's working state per node, both halves touched together and
-/// only by the pass. `cache` is what taffy measured this node at, per
-/// constraints; clearing it is how a node is marked dirty. `unrounded` is
-/// the box before rounding, read back by the rounding walk so rounding
-/// errors do not accumulate down the tree. Both persist across ticks
-/// because a cached subtree is not revisited.
+/// The pass's working state per node, touched only by the pass. `cache`
+/// is what taffy measured this node at, per constraints; clearing it is
+/// how a node is marked dirty, and it persists across ticks because a
+/// cached subtree is not revisited. `unrounded` is the box before
+/// rounding, which the rounding walk reads back for this node's own
+/// offset from its parent. `abs` is the node's unrounded absolute
+/// origin, the sum of those offsets down from the root: the rounding
+/// walk sets it on the way down and rounds it once for the `Layout`,
+/// which is what keeps rounding errors from accumulating. `pass` is the
+/// number of the pass that last set `abs`, so the walk can check a
+/// parent was visited before its child; both are only meaningful within
+/// the pass that wrote them.
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) cache: taffy::tree::Cache,
     pub(crate) unrounded: taffy::tree::Layout,
+    pub(crate) abs: geometry::Point,
+    pub(crate) pass: u32,
 }
 
 impl Component for Scratch {}

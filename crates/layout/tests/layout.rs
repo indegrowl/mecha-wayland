@@ -629,3 +629,56 @@ fn block_layout_stacks_and_stretches_width() {
     assert_eq!(rect(&app, a), Rect::new(0.0, 0.0, 300.0, 20.0));
     assert_eq!(rect(&app, b), Rect::new(0.0, 20.0, 300.0, 30.0));
 }
+
+/// Three thirds of 100 do not land on whole pixels, so the rounding walk
+/// has to work from the unrounded cumulative offset: every child must
+/// start where its previous sibling ended, at every level.
+#[test]
+fn nested_thirds_tile_their_parent_exactly() {
+    let mut app = app();
+    let r = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                LayoutStyle::default().size(px(100.0), px(30.0)),
+            ),
+        )
+        .id();
+    let mut rows = Vec::new();
+    for _ in 0..3 {
+        let row = child(&mut app, r, LayoutStyle::default().grow(1.0));
+        let leaves: Vec<NodeId> = (0..3)
+            .map(|_| child(&mut app, row, LayoutStyle::default().grow(1.0)))
+            .collect();
+        rows.push((row, leaves));
+    }
+    app.tick();
+
+    let check = |parent: NodeId, children: &[NodeId]| {
+        let p = rect(&app, parent);
+        let first = rect(&app, children[0]);
+        assert_eq!(first.x(), p.x(), "the first child starts at the parent");
+        for pair in children.windows(2) {
+            let left = rect(&app, pair[0]);
+            let right = rect(&app, pair[1]);
+            assert_eq!(
+                right.x(),
+                left.right(),
+                "a child starts where its sibling ended"
+            );
+        }
+        let last = rect(&app, children[children.len() - 1]);
+        assert_eq!(last.right(), p.right(), "the last child ends at the parent");
+        for &c in children {
+            assert!(rect(&app, c).width() > 0.0, "no child collapsed to zero");
+        }
+    };
+
+    let row_ids: Vec<NodeId> = rows.iter().map(|(row, _)| *row).collect();
+    check(r, &row_ids);
+    for (row, leaves) in &rows {
+        check(*row, leaves);
+    }
+}

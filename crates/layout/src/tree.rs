@@ -32,6 +32,10 @@ pub(crate) struct LayoutTree<'a> {
     tree: Tree<'a>,
     /// The root of this pass; its box lands at the origin.
     root: NodeId,
+    /// This pass's number, one past the last one this root ran. Stamped
+    /// into each node's `Scratch` as the rounding walk reaches it, so the
+    /// walk can check a parent really was visited before its child.
+    pass: u32,
     /// The live id at each slot under `root`, so a slot taffy names
     /// resolves without reaching into the arena.
     slots: Vec<Option<NodeId>>,
@@ -58,9 +62,11 @@ impl<'a> LayoutTree<'a> {
             }
             slots[slot] = Some(id);
         }
+        let pass = scratch.get(root).map_or(0, |s| s.pass).wrapping_add(1);
         Self {
             tree,
             root,
+            pass,
             slots,
             styles,
             measures,
@@ -231,26 +237,48 @@ impl RoundTree for LayoutTree<'_> {
     }
 
     /// Taffy's rounding walk (`round_layout`, `compute/mod.rs:219`) is
-    /// preorder: a node's final layout is set before its children are
-    /// visited, with `location` relative to the parent. So the parent's
-    /// absolute box is already in the `Layout` column, and one write per
-    /// node makes the child absolute too.
+    /// preorder, and it carries an *unrounded* cumulative offset: the
+    /// size it hands us was computed as
+    /// `round(cumulative + size) - round(cumulative)`, so it only fits
+    /// against the origin `round(cumulative)`. Adding rounded locations
+    /// to a rounded parent origin instead gives a different origin for
+    /// the same size, and the error compounds: three thirds of 100 then
+    /// overlap by a pixel and leave a pixel of gap. So we carry the
+    /// cumulative offset ourselves, in `Scratch::abs`, and round it once
+    /// here. Size, padding and border are taffy's rounded values as they
+    /// come. A hidden node's unrounded location is `(0, 0)`
+    /// (`compute_hidden_layout`), so it lands at its parent's origin.
     fn set_final_layout(&mut self, node: TaffyId, layout: &TLayout) {
         let id = self.id(node);
-        let origin = if id == self.root {
+        let parent_abs = if id == self.root {
             Point::ZERO
         } else {
             let parent = self.tree.parent(id).expect("a node in a pass is live");
-            self.layouts
+            let parent = self
+                .scratch
                 .get(parent)
-                .expect("the parent's Layout is written before its children's")
-                .rect
-                .origin
+                .expect("a node in a pass is live, and every live node has a Scratch");
+            debug_assert_eq!(
+                parent.pass, self.pass,
+                "the rounding walk is preorder: a parent is visited before its children"
+            );
+            parent.abs
         };
+        let location = self
+            .scratch
+            .get(id)
+            .expect("every live node has a Scratch")
+            .unrounded
+            .location;
+        let abs = parent_abs + Point::new(location.x, location.y);
+        if let Some(mut scratch) = self.scratch.get_mut(id) {
+            scratch.abs = abs;
+            scratch.pass = self.pass;
+        }
         let value = Layout {
             rect: Rect::new(
-                origin.x + layout.location.x,
-                origin.y + layout.location.y,
+                round(abs.x),
+                round(abs.y),
                 layout.size.width,
                 layout.size.height,
             ),
@@ -271,4 +299,10 @@ impl RoundTree for LayoutTree<'_> {
             slot.set_if_neq(value);
         }
     }
+}
+
+/// Taffy's own rounding (`util::sys::round`), so an origin we round here
+/// matches the cumulative offset taffy rounded the sizes against.
+fn round(v: f32) -> f32 {
+    (v + 0.5).floor()
 }
