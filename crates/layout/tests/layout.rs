@@ -682,3 +682,165 @@ fn nested_thirds_tile_their_parent_exactly() {
         check(*row, leaves);
     }
 }
+
+/// Wrapping puts the overflowing child on a second line, and
+/// `align_content` decides where the lines sit on the cross axis.
+#[test]
+fn wrap_starts_a_second_line_where_align_content_puts_it() {
+    let mut app = app();
+    let packed = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (LayoutRoot(true), root_style(100.0, 100.0).wrap()),
+        )
+        .id();
+    let p1 = child(&mut app, packed, fixed(60.0, 20.0));
+    let p2 = child(&mut app, packed, fixed(60.0, 20.0));
+
+    let spread = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                root_style(100.0, 100.0)
+                    .wrap()
+                    .align_content(Justify::SpaceBetween),
+            ),
+        )
+        .id();
+    let s1 = child(&mut app, spread, fixed(60.0, 20.0));
+    let s2 = child(&mut app, spread, fixed(60.0, 20.0));
+    app.tick();
+
+    // Two lines of one child each: 60 + 60 does not fit in 100.
+    assert_eq!(rect(&app, p1), Rect::new(0.0, 0.0, 60.0, 20.0));
+    assert_eq!(
+        rect(&app, p2),
+        Rect::new(0.0, 20.0, 60.0, 20.0),
+        "lines packed at the start, the second under the first"
+    );
+    assert_eq!(rect(&app, s1), Rect::new(0.0, 0.0, 60.0, 20.0));
+    assert_eq!(
+        rect(&app, s2),
+        Rect::new(0.0, 80.0, 60.0, 20.0),
+        "space-between pushes the last line to the bottom"
+    );
+}
+
+/// `column_gap` is the gap between columns, so it is the one a row sees;
+/// `row_gap` is the gap between rows, the one a column sees.
+#[test]
+fn gap_lands_on_the_axis_the_container_runs_along() {
+    let mut app = app();
+    let row = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                root_style(300.0, 100.0).column_gap(px(10.0)),
+            ),
+        )
+        .id();
+    let r1 = child(&mut app, row, fixed(20.0, 20.0));
+    let r2 = child(&mut app, row, fixed(20.0, 20.0));
+
+    let row_cross = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (LayoutRoot(true), root_style(300.0, 100.0).row_gap(px(10.0))),
+        )
+        .id();
+    let x1 = child(&mut app, row_cross, fixed(20.0, 20.0));
+    let x2 = child(&mut app, row_cross, fixed(20.0, 20.0));
+
+    let column = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (
+                LayoutRoot(true),
+                root_style(300.0, 100.0).column().row_gap(px(10.0)),
+            ),
+        )
+        .id();
+    let c1 = child(&mut app, column, fixed(20.0, 20.0));
+    let c2 = child(&mut app, column, fixed(20.0, 20.0));
+    app.tick();
+
+    assert_eq!(rect(&app, r1), Rect::new(0.0, 0.0, 20.0, 20.0));
+    assert_eq!(
+        rect(&app, r2),
+        Rect::new(30.0, 0.0, 20.0, 20.0),
+        "a row is spaced by the column gap"
+    );
+    assert_eq!(rect(&app, x1).x(), 0.0);
+    assert_eq!(
+        rect(&app, x2).x(),
+        20.0,
+        "the row gap does not space a single row's children"
+    );
+    assert_eq!(rect(&app, c1), Rect::new(0.0, 0.0, 20.0, 20.0));
+    assert_eq!(
+        rect(&app, c2),
+        Rect::new(0.0, 30.0, 20.0, 20.0),
+        "a column is spaced by the row gap"
+    );
+}
+
+/// The four clamps, each on its own axis.
+#[test]
+fn min_and_max_sizes_clamp_each_axis() {
+    let mut app = app();
+    let r = root(&mut app, 300.0, 100.0);
+    let wide = child(&mut app, r, fixed(10.0, 20.0).min_width(px(30.0)));
+    let narrow = child(&mut app, r, fixed(80.0, 20.0).max_width(px(40.0)));
+    let tall = child(&mut app, r, fixed(20.0, 5.0).min_height(px(25.0)));
+    let short = child(&mut app, r, fixed(20.0, 90.0).max_height(px(30.0)));
+    app.tick();
+
+    assert_eq!(rect(&app, wide).width(), 30.0, "min_width raised it");
+    assert_eq!(rect(&app, narrow).width(), 40.0, "max_width capped it");
+    assert_eq!(rect(&app, tall).height(), 25.0, "min_height raised it");
+    assert_eq!(rect(&app, short).height(), 30.0, "max_height capped it");
+    // The heights are untouched by the width clamps, and vice versa.
+    assert_eq!(rect(&app, wide).height(), 20.0);
+    assert_eq!(rect(&app, narrow).height(), 20.0);
+    assert_eq!(rect(&app, tall).width(), 20.0);
+    assert_eq!(rect(&app, short).width(), 20.0);
+    // Side by side in the row, at the clamped widths.
+    assert_eq!(rect(&app, wide).x(), 0.0);
+    assert_eq!(rect(&app, narrow).x(), 30.0);
+    assert_eq!(rect(&app, tall).x(), 70.0);
+    assert_eq!(rect(&app, short).x(), 90.0);
+}
+
+/// Every side of `padding` and `border` is its own value, and the content
+/// box is inset by the sum of the two on each side.
+#[test]
+fn asymmetric_padding_and_border_inset_each_side_on_its_own() {
+    let mut app = app();
+    let style = root_style(200.0, 100.0)
+        .padding(Insets::new(px(4.0), px(8.0), px(12.0), px(16.0)))
+        .border(Insets::new(px(1.0), px(2.0), px(3.0), px(4.0)));
+    let r = app
+        .spawn_with(app.root(), Leaf, (LayoutRoot(true), style))
+        .id();
+    let inner = child(&mut app, r, LayoutStyle::default().fill());
+    app.tick();
+
+    let l = *app.component::<Layout>(r).unwrap();
+    assert_eq!(l.padding, Insets::new(4.0, 8.0, 12.0, 16.0));
+    assert_eq!(l.border, Insets::new(1.0, 2.0, 3.0, 4.0));
+    // left 4 + 16, top 1 + 4, and 200 - 20 - 10 by 100 - 5 - 15.
+    let content = Rect::new(20.0, 5.0, 170.0, 80.0);
+    assert_eq!(l.content(), content);
+    assert_eq!(
+        rect(&app, inner),
+        content,
+        "the child fills the content box"
+    );
+}
