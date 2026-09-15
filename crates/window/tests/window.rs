@@ -394,7 +394,12 @@ fn resized_rewrites_the_style_only_when_the_size_differs() {
     app.tick();
     take_done();
 
-    app.emit(Resized { size: Size::new(640.0, 360.0) }, win);
+    app.emit(
+        Resized {
+            size: Size::new(640.0, 360.0),
+        },
+        win,
+    );
     app.tick();
     let style = app.component::<LayoutStyle>(win).unwrap();
     assert_eq!((style.width, style.height), (px(640.0), px(360.0)));
@@ -404,10 +409,22 @@ fn resized_rewrites_the_style_only_when_the_size_differs() {
     );
     assert_eq!(take_done(), vec![vec![win.id()]], "relaid out that tick");
 
-    app.emit(Resized { size: Size::new(640.0, 360.0) }, win);
+    app.emit(
+        Resized {
+            size: Size::new(640.0, 360.0),
+        },
+        win,
+    );
     app.tick();
-    assert_eq!(take_done(), vec![vec![]], "same size: no style write, nothing dirty");
-    assert!(take_requested().is_empty(), "Resized never asks for a frame");
+    assert_eq!(
+        take_done(),
+        vec![vec![]],
+        "same size: no style write, nothing dirty"
+    );
+    assert!(
+        take_requested().is_empty(),
+        "Resized never asks for a frame"
+    );
 }
 
 #[test]
@@ -426,7 +443,10 @@ fn scale_factor_changed_stores_the_scale_and_asks_for_a_frame_once() {
     app.emit(ScaleFactorChanged { scale: 2.0 }, win);
     app.flush();
     assert_eq!(app.widget::<Window>(win).unwrap().scale(), 2.0);
-    assert!(take_requested().is_empty(), "the same scale again asks nothing");
+    assert!(
+        take_requested().is_empty(),
+        "the same scale again asks nothing"
+    );
 }
 
 /// A spawn site's own handler on `CloseRequested`: removes the window. A
