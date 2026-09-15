@@ -6,5 +6,6 @@ pub mod prelude {
     pub use app::prelude::*;
     pub use geometry::prelude::*;
     pub use layout::prelude::*;
+    pub use paint::prelude::*;
     pub use window::prelude::*;
 }

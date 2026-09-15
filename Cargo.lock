@@ -41,7 +41,16 @@ dependencies = [
  "app",
  "geometry",
  "layout",
+ "paint",
  "window",
+]
+
+[[package]]
+name = "paint"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "geometry",
 ]
 
 [[package]]
