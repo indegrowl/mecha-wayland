@@ -5,3 +5,12 @@ edition = "2024"
 
 [dependencies]
 app.workspace = true
+bitflags.workspace = true
+
+[build-dependencies]
+quick-xml = { version = "0.39", features = ["serialize"] }
+serde = { version = "1", features = ["derive"] }
+quote = "1"
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
+prettyplease = "0.2"

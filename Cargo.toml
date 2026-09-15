@@ -26,6 +26,7 @@ paint = { path = "crates/paint" }
 render = { path = "crates/render" }
 ring = { path = "crates/ring" }
 window = { path = "crates/window" }
+bitflags = "2"
 io-uring = "0.7"
 libc = "0.2"
 smallvec = "1"

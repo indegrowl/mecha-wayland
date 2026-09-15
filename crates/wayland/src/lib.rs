@@ -8,7 +8,14 @@ use std::path::PathBuf;
 
 use app::prelude::*;
 
+pub mod display;
+pub mod generated;
 pub mod wire;
+
+pub use display::{
+    WlCallback, WlCallbackEvent, WlDisplay, WlDisplayEvent, WlRegistry, WlRegistryEvent,
+};
+pub use generated::*;
 
 use wire::Writer;
 
@@ -178,31 +185,6 @@ impl Wayland {
     /// Whether requests are buffered and not yet sent.
     pub fn has_pending(&self) -> bool {
         !self.out.is_empty()
-    }
-}
-
-pub mod display {
-    //! Placeholder so `Wayland::over` compiles; Task 4 writes the real
-    //! `wl_display`, `wl_registry` and `wl_callback` here.
-    use super::*;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct WlDisplay(pub ObjectId);
-    fn dispatch(_: &mut App, _: ObjectId, _: u16, _: &[u8], _: &mut VecDeque<OwnedFd>) {}
-    impl Interface for WlDisplay {
-        const NAME: &'static str = "wl_display";
-        const VERSION: u32 = 1;
-        const INFO: &'static Info = &Info {
-            name: "wl_display",
-            version: 1,
-            dispatch,
-        };
-        fn id(self) -> ObjectId {
-            self.0
-        }
-        fn from_id(id: ObjectId) -> Self {
-            WlDisplay(id)
-        }
     }
 }
 
