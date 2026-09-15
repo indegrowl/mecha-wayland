@@ -177,3 +177,62 @@ fn a_closed_socket_panics() {
     let mut app = f.hang_up();
     Ring::turn(&mut app);
 }
+
+// ── globals ──────────────────────────────────────────────────────────────
+
+#[test]
+fn install_binds_the_named_globals_as_resources() {
+    let mut f = Fake::new(GLOBALS, |m| m.bind::<WlCompositor>().bind::<WlShm>());
+    let compositor = *f.app.resource::<WlCompositor>();
+    let shm = *f.app.resource::<WlShm>();
+    assert_eq!((compositor.id(), shm.id()), (ObjectId(4), ObjectId(5)));
+    let wl = f.app.resource::<Wayland>();
+    assert_eq!(
+        wl.version(compositor),
+        6,
+        "the lesser of advertised 6 and XML 7"
+    );
+    assert_eq!(wl.version(shm), 2);
+    let globals = f.app.resource::<Globals>();
+    assert_eq!(globals.iter().count(), 3);
+    assert_eq!(globals.registry().id(), ObjectId(2));
+    let seat = globals.find("wl_seat").unwrap();
+    assert_eq!((seat.name, seat.version), (3, 9));
+
+    let bind = f.expect(2, 0);
+    let mut r = bind.reader();
+    assert_eq!(r.uint(), Some(1));
+    assert_eq!(r.string().as_deref(), Some("wl_compositor"));
+    assert_eq!(r.uint(), Some(6));
+    assert_eq!(r.object(), Some(ObjectId(4)));
+}
+
+#[test]
+fn a_global_above_the_xml_version_binds_at_the_xml_version() {
+    let f = Fake::new(&[("wl_shm", 9)], |m| m.bind::<WlShm>());
+    let shm = *f.app.resource::<WlShm>();
+    assert_eq!(f.app.resource::<Wayland>().version(shm), WlShm::VERSION);
+}
+
+#[test]
+#[should_panic(expected = "does not advertise xdg_wm_base")]
+fn a_missing_global_panics_at_install() {
+    Fake::new(GLOBALS, |m| m.bind::<XdgWmBase>());
+}
+
+#[test]
+fn the_registry_keeps_being_followed_after_install() {
+    let mut f = fake();
+    f.send(2, 0, |w| {
+        w.uint(9);
+        w.string("wl_output");
+        w.uint(4);
+    });
+    f.turn();
+    assert!(f.app.resource::<Globals>().find("wl_output").is_some());
+    assert!(log(&f)[0].starts_with("Global {"));
+    f.send(2, 1, |w| w.uint(9));
+    f.turn();
+    assert!(f.app.resource::<Globals>().find("wl_output").is_none());
+    assert_eq!(f.app.resource::<Globals>().iter().count(), 3);
+}

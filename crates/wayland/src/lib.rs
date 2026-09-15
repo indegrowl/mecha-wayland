@@ -1,5 +1,55 @@
 #![forbid(unsafe_code)]
-//! The Wayland client as a resource. Crate docs are completed in Task 6.
+//! The Wayland client as a resource: typed `Copy` ids with generated
+//! request methods, one generated signal enum per interface, globals
+//! bound at install and kept as resources.
+//!
+//! # Model
+//!
+//! - [`Wayland`] is the connection. A request is a method on an
+//!   interface's id, `surface.commit(&mut wl)`, appended to a buffer the
+//!   next `BeforeWait` sends in one `sendmsg`. A request that creates an
+//!   object allocates its id at the sender's version and returns it.
+//! - Every event is a variant of its interface's enum, `WlSurfaceEvent`,
+//!   signalled in wire order from inside the read completion; a module
+//!   registers one system per interface it listens to. An `fd` argument
+//!   is an `OwnedFd`; a nullable `object` an `Option`.
+//! - [`WaylandModule`] connects, sends `get_registry` and a `sync`, loops
+//!   `Ring::turn` until the sync is answered, and binds every global
+//!   named with [`WaylandModule::bind`] as its own resource:
+//!   `app.resource::<WlCompositor>()`. [`Globals`] keeps the advertised
+//!   list exact afterwards and binds anything else on request.
+//! - Ids are numbers. A request on a destroyed object is the caller's bug
+//!   and the compositor's `wl_display.error` answers it with a panic.
+//!   `delete_id` frees a client id for reuse.
+//! - A closed socket panics: nothing here runs without the compositor.
+//!
+//! The wire codec is in [`wire`], the three hand-written interfaces in
+//! [`display`], everything generated from `protocols/*.xml` in
+//! [`generated`]. With the `fake` feature, [`fake::Fake`] is a scripted
+//! compositor over a socketpair for tests.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use app::prelude::*;
+//! use ring::prelude::*;
+//! use wayland::prelude::*;
+//!
+//! fn on_surface(app: &mut App, e: &WlSurfaceEvent) {
+//!     if let WlSurfaceEvent::PreferredBufferScale { surface, factor } = e {
+//!         println!("{surface:?} prefers scale {factor}");
+//!     }
+//! }
+//!
+//! let mut app = App::new();
+//! app.add_module(RingModule::default())
+//!     .add_module(WaylandModule::new().bind::<WlCompositor>())
+//!     .system(on_surface);
+//! let compositor = *app.resource::<WlCompositor>();
+//! let surface = compositor.create_surface(&mut app.resource_mut::<Wayland>());
+//! surface.commit(&mut app.resource_mut::<Wayland>());
+//! app.run();
+//! ```
 
 use std::collections::{HashMap, VecDeque};
 use std::mem;
