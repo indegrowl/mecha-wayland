@@ -7,16 +7,18 @@ use geometry::{Rect, Size};
 
 pub mod prelude {
     pub use crate::{
-        Atlas, AtlasId, AtlasTile, Bitmap, Cell, Class, Error, FontId, Format, Glyph, Line, Page,
-        Sprite, SpriteId,
+        Atlas, AtlasId, AtlasTile, Bitmap, Cell, Class, Error, External, FontId, Format, Glyph,
+        Line, Page, Plane, Sprite, SpriteId,
     };
 }
 
 mod bitmap;
+mod external;
 mod font;
 mod mip;
 mod page;
 
+pub use external::{External, Plane};
 pub use font::{Glyph, Line};
 pub use page::{CELL, CELLS, Cell, PAGE, Page};
 
@@ -130,8 +132,7 @@ pub struct Sprite {
 enum Owner {
     /// A page: its class and its index in that class's list.
     Page(Class, u32),
-    /// An external: its index in the external list. Filled in by a later task.
-    #[allow(dead_code)]
+    /// An external: its index in the external list.
     External(u32),
 }
 
@@ -153,6 +154,8 @@ pub struct Atlas {
     fonts: Vec<font::Font>,
     /// Indexed by the value a font's per-size index vector holds.
     glyphs: Vec<Glyph>,
+    /// Indexed by the index `Owner::External` carries.
+    externals: Vec<External>,
 }
 
 impl Resource for Atlas {}
@@ -172,6 +175,7 @@ impl Atlas {
             sprites: Vec::new(),
             fonts: Vec::new(),
             glyphs: Vec::new(),
+            externals: Vec::new(),
         }
     }
 

@@ -173,6 +173,65 @@ fn a_backend_reads_a_dirty_cell_at_every_level() {
     }
 }
 
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
+
+fn a_fd() -> Arc<OwnedFd> {
+    Arc::new(OwnedFd::from(std::fs::File::open("/dev/null").unwrap()))
+}
+
+#[test]
+fn an_external_is_named_described_and_replaced() {
+    let mut atlas = Atlas::new();
+    atlas.insert(Class::Icon, &icon(8)).unwrap(); // page 0
+    let first = a_fd();
+    let feed = atlas.external(External {
+        size: geometry::Size::new(640.0, 480.0),
+        fourcc: 0x3231564e, // NV12
+        modifier: 0,
+        planes: vec![Plane {
+            fd: first.clone(),
+            offset: 0,
+            stride: 640,
+        }],
+        generation: 0,
+    });
+    assert_eq!(feed, AtlasId(1), "ids count pages and externals together");
+    assert_eq!(atlas.class(feed), Class::External);
+    assert_eq!(
+        atlas.external_tile(feed),
+        AtlasTile {
+            atlas: feed,
+            bounds: Rect::new(0.0, 0.0, 640.0, 480.0)
+        }
+    );
+    assert_eq!(atlas.pages().count(), 1, "an external is not a page");
+    assert_eq!(Arc::strong_count(&first), 2);
+
+    let second = a_fd();
+    {
+        let e = atlas.external_mut(feed);
+        e.planes = vec![Plane {
+            fd: second.clone(),
+            offset: 0,
+            stride: 640,
+        }];
+        e.generation += 1;
+    }
+    assert_eq!(Arc::strong_count(&first), 1, "the old buffer was released");
+    let all: Vec<(AtlasId, u64)> = atlas
+        .externals()
+        .map(|(id, e)| (id, e.generation))
+        .collect();
+    assert_eq!(all, vec![(feed, 1)]);
+    let mut cells = 0;
+    atlas.drain_dirty(|_, _| cells += 1);
+    assert_eq!(
+        cells, 256,
+        "only the icon page has cells; an external has none"
+    );
+}
+
 const INTER: &[u8] = include_bytes!("fixtures/Inter-Regular.ttf");
 
 #[test]
