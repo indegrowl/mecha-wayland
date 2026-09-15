@@ -8,5 +8,6 @@ pub mod prelude {
     pub use layout::prelude::*;
     pub use paint::prelude::*;
     pub use render::prelude::*;
+    pub use ring::prelude::*;
     pub use window::prelude::*;
 }

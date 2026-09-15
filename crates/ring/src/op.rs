@@ -1,0 +1,170 @@
+//! One in-flight operation: the buffers, the `iovec`, the `msghdr` and
+//! the control buffer, boxed so the pointers the kernel holds stay put.
+//! The only unsafe in the workspace lives here.
+#![allow(unsafe_code)]
+
+use std::mem;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::ptr;
+
+use io_uring::{opcode, squeue, types};
+
+use crate::Completed;
+
+pub(crate) enum Kind {
+    Recv,
+    Send,
+}
+
+pub(crate) struct Op {
+    kind: Kind,
+    buf: Vec<u8>,
+    fds: Vec<OwnedFd>,
+    raw_fds: Vec<RawFd>,
+    iov: libc::iovec,
+    msg: libc::msghdr,
+    cmsg: Vec<u8>,
+    pub(crate) result: Option<i32>,
+}
+
+fn cmsg_space(fds: usize) -> usize {
+    // SAFETY: a pure size computation.
+    unsafe { libc::CMSG_SPACE((fds * mem::size_of::<RawFd>()) as u32) as usize }
+}
+
+impl Op {
+    /// A receive into `buf`'s whole capacity, with control room for
+    /// `max_fds` passed fds (none if zero).
+    pub(crate) fn recv(mut buf: Vec<u8>, max_fds: usize) -> Box<Op> {
+        buf.clear();
+        let cmsg = if max_fds == 0 {
+            Vec::new()
+        } else {
+            vec![0u8; cmsg_space(max_fds)]
+        };
+        // SAFETY: iovec and msghdr are plain C structs; all-zero is valid.
+        let mut op = Box::new(Op {
+            kind: Kind::Recv,
+            buf,
+            fds: Vec::new(),
+            raw_fds: Vec::new(),
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg,
+            result: None,
+        });
+        op.iov.iov_base = op.buf.as_mut_ptr().cast();
+        op.iov.iov_len = op.buf.capacity();
+        op.msg.msg_iov = &mut op.iov;
+        op.msg.msg_iovlen = 1;
+        if !op.cmsg.is_empty() {
+            op.msg.msg_control = op.cmsg.as_mut_ptr().cast();
+            op.msg.msg_controllen = op.cmsg.len() as _;
+        }
+        op
+    }
+
+    /// A send of `buf` with `fds` as `SCM_RIGHTS`.
+    pub(crate) fn send(buf: Vec<u8>, fds: Vec<OwnedFd>) -> Box<Op> {
+        let raw_fds: Vec<RawFd> = fds.iter().map(|f| f.as_raw_fd()).collect();
+        let cmsg = if raw_fds.is_empty() {
+            Vec::new()
+        } else {
+            vec![0u8; cmsg_space(raw_fds.len())]
+        };
+        // SAFETY: as in `recv`.
+        let mut op = Box::new(Op {
+            kind: Kind::Send,
+            buf,
+            fds,
+            raw_fds,
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg,
+            result: None,
+        });
+        op.iov.iov_base = op.buf.as_ptr() as *mut libc::c_void;
+        op.iov.iov_len = op.buf.len();
+        op.msg.msg_iov = &mut op.iov;
+        op.msg.msg_iovlen = 1;
+        if !op.cmsg.is_empty() {
+            op.msg.msg_control = op.cmsg.as_mut_ptr().cast();
+            op.msg.msg_controllen = op.cmsg.len() as _;
+            let bytes = (op.raw_fds.len() * mem::size_of::<RawFd>()) as u32;
+            // SAFETY: `cmsg` was sized by `CMSG_SPACE` for exactly these fds,
+            // and `msg_control` points into it.
+            unsafe {
+                let c = libc::CMSG_FIRSTHDR(&op.msg);
+                (*c).cmsg_level = libc::SOL_SOCKET;
+                (*c).cmsg_type = libc::SCM_RIGHTS;
+                (*c).cmsg_len = libc::CMSG_LEN(bytes) as _;
+                ptr::copy_nonoverlapping(
+                    op.raw_fds.as_ptr(),
+                    libc::CMSG_DATA(c).cast::<RawFd>(),
+                    op.raw_fds.len(),
+                );
+            }
+        }
+        op
+    }
+
+    /// The submission entry. Valid while this box lives, which is until
+    /// `complete`.
+    pub(crate) fn entry(&mut self, fd: RawFd) -> squeue::Entry {
+        match self.kind {
+            Kind::Recv => opcode::RecvMsg::new(types::Fd(fd), &mut self.msg).build(),
+            Kind::Send => opcode::SendMsg::new(types::Fd(fd), &self.msg).build(),
+        }
+    }
+
+    /// After the completion: a receive is truncated to the bytes received
+    /// and its fds decoded; a send gives its buffers back untouched.
+    pub(crate) fn complete(mut self: Box<Self>) -> Completed {
+        if let Kind::Recv = self.kind {
+            let n = self.result.unwrap_or(0).max(0) as usize;
+            // SAFETY: the kernel wrote `n` bytes into the capacity, `n` is
+            // at most the capacity `iov_len` offered.
+            unsafe { self.buf.set_len(n.min(self.buf.capacity())) };
+            // SAFETY: `msg_control` and `msg_controllen` are what the kernel
+            // filled; each fd found was passed to us and is owned once.
+            self.fds = unsafe { take_fds(&self.msg) };
+        }
+        Completed {
+            buf: mem::take(&mut self.buf),
+            fds: mem::take(&mut self.fds),
+        }
+    }
+}
+
+unsafe fn take_fds(msg: &libc::msghdr) -> Vec<OwnedFd> {
+    let mut out = Vec::new();
+    if msg.msg_control.is_null() {
+        return out;
+    }
+    unsafe {
+        let mut c = libc::CMSG_FIRSTHDR(msg);
+        while !c.is_null() {
+            if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                let data = ((*c).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
+                let p = libc::CMSG_DATA(c).cast::<RawFd>();
+                for i in 0..data / mem::size_of::<RawFd>() {
+                    out.push(OwnedFd::from_raw_fd(*p.add(i)));
+                }
+            }
+            c = libc::CMSG_NXTHDR(msg, c);
+        }
+    }
+    out
+}
+
+/// Push one entry, submitting first if the queue is full.
+pub(crate) fn push(uring: &mut io_uring::IoUring, entry: squeue::Entry) {
+    loop {
+        // SAFETY: the entry's pointers live in a boxed `Op` kept by the
+        // ring until its completion is finished.
+        if unsafe { uring.submission().push(&entry) }.is_ok() {
+            return;
+        }
+        uring.submit().expect("io_uring submit");
+    }
+}
