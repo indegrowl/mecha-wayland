@@ -1,0 +1,9 @@
+[package]
+name = "window"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+app.workspace = true
+geometry.workspace = true
+layout.workspace = true
