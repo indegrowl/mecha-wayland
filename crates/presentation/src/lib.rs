@@ -50,9 +50,8 @@ pub struct LayerRole {
     pub keyboard_interactivity: KeyboardInteractivity,
 }
 
-// `Shell`'s fields and most of `Entry`'s are read starting Task 8 (`kick`,
-// `settle`) and Task 9 (`on_surface`, `on_removed`); until then they are
-// written but not read.
+// `Shell`'s variants are read starting Task 9 (`on_removed`), to destroy
+// the role objects; until then they are written but not read.
 #[allow(dead_code)]
 enum Shell {
     Toplevel {
@@ -62,9 +61,10 @@ enum Shell {
     Layer(ZwlrLayerSurfaceV1),
 }
 
-#[allow(dead_code)]
 struct Entry {
     surface: WlSurface,
+    /// Read starting Task 9, by `on_removed`, to destroy the role.
+    #[allow(dead_code)]
     shell: Shell,
     /// The toplevel's last proposal; zero means ours to choose.
     proposed: (i32, i32),
@@ -105,8 +105,6 @@ impl Surfaces {
         e.buffers.as_ref()?.pixel(e.last_slot, x, y)
     }
 
-    /// Read starting Task 8, by the systems that answer wire events.
-    #[allow(dead_code)]
     fn entry_of(&mut self, object: ObjectId) -> Option<(NodeId, &mut Entry)> {
         let w = *self.owner.get(&object)?;
         self.entries.get_mut(&w).map(|e| (w, e))
@@ -241,14 +239,254 @@ fn on_wm_base(app: &mut App, e: &XdgWmBaseEvent) {
     wm_base.pong(&mut app.resource_mut::<Wayland>(), *serial);
 }
 
-// The remaining systems are written in Tasks 8 and 9; until then they are
-// the stubs below so the module compiles.
-fn on_xdg_surface(_: &mut App, _: &XdgSurfaceEvent) {}
-fn on_toplevel(_: &mut App, _: &XdgToplevelEvent) {}
-fn on_layer_surface(_: &mut App, _: &ZwlrLayerSurfaceV1Event) {}
+fn device(size: Size, scale: i32) -> (u32, u32) {
+    let s = scale.max(1) as f32;
+    (
+        ((size.width * s).round() as u32).max(1),
+        ((size.height * s).round() as u32).max(1),
+    )
+}
+
+/// Drop the buffers, if any, and make new ones at the entry's size and
+/// scale, owned by `w`.
+fn replace_buffers(
+    entry: &mut Entry,
+    owner: &mut HashMap<ObjectId, NodeId>,
+    wl: &mut Wayland,
+    shm: WlShm,
+    w: NodeId,
+) {
+    if let Some(old) = entry.buffers.take() {
+        for s in &old.slots {
+            owner.remove(&s.buffer.id());
+        }
+        old.destroy(wl);
+    }
+    let (dw, dh) = device(entry.size, entry.scale);
+    let buffers = Buffers::create(wl, shm, dw, dh);
+    for s in &buffers.slots {
+        owner.insert(s.buffer.id(), w);
+    }
+    entry.buffers = Some(buffers);
+}
+
+/// The shell configured `w`: settle the size, make buffers if the device
+/// size changed, report `Resized`, and want a frame.
+fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
+    let layout = app
+        .component::<Layout>(w)
+        .map(|l| l.rect.size)
+        .unwrap_or(Size::ZERO);
+    let pick = |p: i32, l: f32, d: f32| {
+        if p > 0 {
+            p as f32
+        } else if l > 0.0 {
+            l
+        } else {
+            d
+        }
+    };
+    let size = Size::new(
+        pick(proposed.0, layout.width, DEFAULT_SIZE.width),
+        pick(proposed.1, layout.height, DEFAULT_SIZE.height),
+    );
+    let shm = *app.resource::<WlShm>();
+    {
+        let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        let s = &mut *surfaces;
+        let Some(entry) = s.entries.get_mut(&w) else {
+            return;
+        };
+        entry.size = size;
+        let (dw, dh) = device(size, entry.scale);
+        let stale = entry
+            .buffers
+            .as_ref()
+            .is_none_or(|b| (b.width, b.height) != (dw, dh));
+        if stale {
+            replace_buffers(entry, &mut s.owner, &mut wl, shm, w);
+        }
+        entry.configured = true;
+        entry.wanting = true;
+    }
+    app.emit(Resized { size }, w);
+    kick(app, w);
+}
+
+/// The one decision: configured, no callback outstanding, a buffer free
+/// and wanting gives `Frame(w)`. Otherwise the next configure, `done` or
+/// `release` kicks again.
+fn kick(app: &mut App, w: NodeId) {
+    let ready = app.resource::<Surfaces>().entries.get(&w).is_some_and(|e| {
+        e.configured
+            && e.callback.is_none()
+            && e.wanting
+            && e.buffers.as_ref().is_some_and(|b| b.free_slot().is_some())
+    });
+    if ready {
+        app.resource_mut::<Surfaces>()
+            .entries
+            .get_mut(&w)
+            .unwrap()
+            .wanting = false;
+        app.signal(Frame(w));
+    }
+}
+
+fn on_toplevel(app: &mut App, e: &XdgToplevelEvent) {
+    match e {
+        XdgToplevelEvent::Configure {
+            toplevel,
+            width,
+            height,
+            ..
+        } => {
+            if let Some((_, entry)) = app.resource_mut::<Surfaces>().entry_of(toplevel.id()) {
+                entry.proposed = (*width, *height);
+            }
+        }
+        XdgToplevelEvent::Close { toplevel } => {
+            if let Some(w) = app
+                .resource::<Surfaces>()
+                .owner
+                .get(&toplevel.id())
+                .copied()
+            {
+                app.emit(CloseRequested, w);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn on_xdg_surface(app: &mut App, e: &XdgSurfaceEvent) {
+    let XdgSurfaceEvent::Configure { surface, serial } = e;
+    let found = {
+        let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.entry_of(surface.id()).map(|(w, entry)| {
+            surface.ack_configure(&mut wl, *serial);
+            (w, entry.proposed)
+        })
+    };
+    if let Some((w, proposed)) = found {
+        settle(app, w, proposed);
+    }
+}
+
+fn on_layer_surface(app: &mut App, e: &ZwlrLayerSurfaceV1Event) {
+    match e {
+        ZwlrLayerSurfaceV1Event::Configure {
+            layer_surface,
+            serial,
+            width,
+            height,
+        } => {
+            let found = {
+                let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+                surfaces.entry_of(layer_surface.id()).map(|(w, _)| {
+                    layer_surface.ack_configure(&mut wl, *serial);
+                    w
+                })
+            };
+            if let Some(w) = found {
+                settle(app, w, (*width as i32, *height as i32));
+            }
+        }
+        ZwlrLayerSurfaceV1Event::Closed { layer_surface } => {
+            if let Some(w) = app
+                .resource::<Surfaces>()
+                .owner
+                .get(&layer_surface.id())
+                .copied()
+            {
+                app.emit(CloseRequested, w);
+            }
+        }
+    }
+}
+
+fn on_frame_requested(app: &mut App, r: &FrameRequested) {
+    if let Some(entry) = app.resource_mut::<Surfaces>().entries.get_mut(&r.0) {
+        entry.wanting = true;
+    }
+    kick(app, r.0);
+}
+
+/// The drawer in v0, and the commit after every drawer for good: the last
+/// `Frame` system to run.
+fn on_frame(app: &mut App, f: &Frame) {
+    let w = f.0;
+    let Some(clear) = app.widget::<Window>(w).map(|win| win.clear()) else {
+        return;
+    };
+    let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+    let s = &mut *surfaces;
+    let Some(entry) = s.entries.get_mut(&w) else {
+        return;
+    };
+    if !entry.configured {
+        return;
+    }
+    let Some(buffers) = entry.buffers.as_mut() else {
+        return;
+    };
+    let Some(slot) = buffers.free_slot() else {
+        entry.wanting = true;
+        return;
+    };
+    buffers.fill(slot, clear);
+    if entry.scale != entry.scale_sent {
+        entry.surface.set_buffer_scale(&mut wl, entry.scale);
+        entry.scale_sent = entry.scale;
+    }
+    entry
+        .surface
+        .attach(&mut wl, Some(buffers.slots[slot].buffer), 0, 0);
+    entry
+        .surface
+        .damage_buffer(&mut wl, 0, 0, buffers.width as i32, buffers.height as i32);
+    let callback = entry.surface.frame(&mut wl);
+    s.owner.insert(callback.id(), w);
+    entry.callback = Some(callback);
+    entry.surface.commit(&mut wl);
+    buffers.slots[slot].held = true;
+    entry.last_slot = slot;
+}
+
+fn on_callback(app: &mut App, e: &WlCallbackEvent) {
+    let WlCallbackEvent::Done { callback, .. } = e;
+    let w = {
+        let mut surfaces = app.resource_mut::<Surfaces>();
+        let Some(w) = surfaces.owner.remove(&callback.id()) else {
+            return;
+        };
+        if let Some(entry) = surfaces.entries.get_mut(&w)
+            && entry.callback == Some(*callback)
+        {
+            entry.callback = None;
+        }
+        w
+    };
+    kick(app, w);
+}
+
+fn on_buffer(app: &mut App, e: &WlBufferEvent) {
+    let WlBufferEvent::Release { buffer } = e;
+    let w = {
+        let mut surfaces = app.resource_mut::<Surfaces>();
+        let Some((w, entry)) = surfaces.entry_of(buffer.id()) else {
+            return;
+        };
+        if let Some(b) = entry.buffers.as_mut()
+            && let Some(slot) = b.slots.iter_mut().find(|s| s.buffer == *buffer)
+        {
+            slot.held = false;
+        }
+        w
+    };
+    kick(app, w);
+}
+
+// `on_surface` and `on_removed` stay stubs until Task 9.
 fn on_surface(_: &mut App, _: &WlSurfaceEvent) {}
-fn on_frame_requested(_: &mut App, _: &FrameRequested) {}
-fn on_callback(_: &mut App, _: &WlCallbackEvent) {}
-fn on_buffer(_: &mut App, _: &WlBufferEvent) {}
 fn on_removed(_: &mut App, _: &Removed) {}
-fn on_frame(_: &mut App, _: &Frame) {}

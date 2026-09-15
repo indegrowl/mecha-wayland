@@ -1,10 +1,12 @@
 // The fixture below (ids, opcodes, event opcodes, `configured`, `attaches`,
-// `log`, the logging systems) serves every task in this slice; only Task 7's
-// three tests use it so far, so most of it is unused until Tasks 8-10 add
-// their tests to this file.
+// `log`, the logging systems) serves every task in this slice. Tasks 7 and
+// 8's tests use most of it now; a few items (the destroy opcodes, `CLOSE`,
+// `LAYER_CLOSED`, `PREFERRED_SCALE`, `SET_BUFFER_SCALE`) wait on later
+// tasks' tests, so the module stays unused-allowed until then.
 #![allow(dead_code)]
 
 use app::prelude::*;
+use geometry::Color;
 use layout::prelude::*;
 use presentation::prelude::*;
 use wayland::fake::Fake;
@@ -243,4 +245,202 @@ fn a_ping_is_answered_with_a_pong() {
     f.turn();
     let pong = f.expect(6, op::PONG);
     assert_eq!(pong.reader().uint(), Some(77));
+}
+
+// ── Task 8 ───────────────────────────────────────────────────────────────
+
+// A layer window allocates only surface 8 and layer surface 9 (no
+// toplevel), so its pool is 10 and its buffers are 11 and 12.
+const LAYER_BUF_A: u32 = 11;
+
+#[test]
+fn a_configure_acks_resizes_and_draws_the_first_frame() {
+    let mut f = fake();
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn(
+            root,
+            window()
+                .clear(Color::rgb(1.0, 0.0, 0.0))
+                .layout(LayoutStyle::default().column()),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(320);
+        w.int(200);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(5));
+    f.turn();
+
+    assert_eq!(f.expect(XDG, op::ACK_CONFIGURE).reader().uint(), Some(5));
+    let l = log(&f);
+    assert!(l.contains(&"Resized 320x200".to_string()), "{l:?}");
+    assert!(l.contains(&format!("Frame {win:?}")), "{l:?}");
+    let pool = f.expect(5, op::CREATE_POOL);
+    let mut r = pool.reader();
+    assert_eq!(r.object(), Some(ObjectId(POOL)));
+    assert_eq!(r.int(), Some(320 * 200 * 4 * 2));
+    let a = f.expect(POOL, op::CREATE_BUFFER);
+    let mut r = a.reader();
+    assert_eq!(r.object(), Some(ObjectId(BUF_A)));
+    assert_eq!(
+        (r.int(), r.int(), r.int(), r.int(), r.uint()),
+        (Some(0), Some(320), Some(200), Some(1280), Some(1))
+    );
+    let b = f.expect(POOL, op::CREATE_BUFFER);
+    assert_eq!(b.reader().object(), Some(ObjectId(BUF_B)));
+    let attach = f.expect(SURFACE, op::ATTACH);
+    assert_eq!(attach.reader().object(), Some(ObjectId(BUF_A)));
+    let damage = f.expect(SURFACE, op::DAMAGE_BUFFER);
+    let mut r = damage.reader();
+    assert_eq!(
+        (r.int(), r.int(), r.int(), r.int()),
+        (Some(0), Some(0), Some(320), Some(200))
+    );
+    assert_eq!(
+        f.expect(SURFACE, op::FRAME).reader().object(),
+        Some(ObjectId(CALLBACK))
+    );
+    f.expect(SURFACE, op::COMMIT);
+    assert!(f.app.resource::<Surfaces>().is_configured(win));
+    assert_eq!(
+        f.app.resource::<Surfaces>().buffer_pixel(win, 0, 0),
+        Some(0xffff_0000)
+    );
+    assert_eq!(
+        f.app.resource::<Surfaces>().buffer_pixel(win, 319, 199),
+        Some(0xffff_0000)
+    );
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(320.0)
+    );
+}
+
+#[test]
+fn a_zero_configure_settles_on_the_layout_size_or_the_default() {
+    let mut f = fake();
+    spawn(
+        &mut f,
+        LayoutStyle::default().column().size(px(100.0), px(50.0)),
+    );
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(0);
+        w.int(0);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    assert!(log(&f).contains(&"Resized 100x50".to_string()));
+
+    let mut f = fake();
+    spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(0);
+        w.int(0);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    assert!(log(&f).contains(&"Resized 640x480".to_string()));
+}
+
+#[test]
+fn a_layer_configure_acks_and_draws_too() {
+    let mut f = fake();
+    let root = f.app.root();
+    let role = Role::Layer(LayerRole {
+        layer: Layer::Top,
+        anchor: Anchor::TOP,
+        exclusive_zone: 0,
+        namespace: "bar".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    });
+    f.app.spawn_with(
+        root,
+        window().layout(LayoutStyle::default().column()),
+        (role,),
+    );
+    f.app.tick();
+    f.turn();
+    f.requests();
+    f.send(XDG, ev::LAYER_CONFIGURE, |w| {
+        w.uint(3);
+        w.uint(800);
+        w.uint(32);
+    });
+    f.turn();
+    assert_eq!(f.expect(XDG, op::LAYER_ACK).reader().uint(), Some(3));
+    assert!(log(&f).contains(&"Resized 800x32".to_string()));
+    assert_eq!(attaches(&mut f), vec![LAYER_BUF_A]);
+}
+
+#[test]
+fn frames_are_throttled_by_the_callback() {
+    let mut f = fake();
+    let win = spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    f.app.signal(RequestFrame(win));
+    f.app.flush();
+    f.turn();
+    assert!(attaches(&mut f).is_empty(), "nothing before configure");
+
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(64);
+        w.int(64);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    assert_eq!(
+        attaches(&mut f),
+        vec![BUF_A],
+        "one frame for the configure and the request together"
+    );
+
+    f.app.signal(RequestFrame(win));
+    f.app.flush();
+    f.turn();
+    assert!(attaches(&mut f).is_empty(), "the callback is outstanding");
+
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert_eq!(
+        attaches(&mut f),
+        vec![BUF_B],
+        "the other buffer, once the callback fired"
+    );
+
+    f.send(CALLBACK + 1, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert!(attaches(&mut f).is_empty(), "nothing wanted");
+}
+
+#[test]
+fn with_both_buffers_held_a_release_draws() {
+    let mut f = fake();
+    let win = configured(&mut f, 64, 64);
+    f.requests();
+    f.app.signal(RequestFrame(win));
+    f.app.flush();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![BUF_B]);
+
+    f.app.signal(RequestFrame(win));
+    f.app.flush();
+    f.send(CALLBACK + 1, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert!(attaches(&mut f).is_empty(), "both buffers are held");
+
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![BUF_A]);
 }
