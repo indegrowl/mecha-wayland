@@ -11,6 +11,10 @@
 //!   default style is a column sized to its content.
 //! - [`InWindow`] is on every node: the window it belongs to, a window's
 //!   being itself, `None` outside every window. Written once, at spawn.
+//! - A window is opaque and clears to a colour, black unless
+//!   [`WindowBuilder::clear`] says otherwise: what shows where nothing is
+//!   drawn, and what a renderer knows is behind everything at the top
+//!   level. Set at build; there is no setter after spawn.
 //! - [`Windows`] is the live list, in spawn order, exact after every
 //!   flush; any tick that changed it fires `OnChanged<Windows>` once.
 //! - The loop: anyone signals [`RequestFrame`] as often as it likes.
@@ -68,7 +72,7 @@
 //! ```
 
 use app::prelude::*;
-use geometry::Size;
+use geometry::{Color, Size};
 use layout::prelude::*;
 
 pub mod prelude {
@@ -92,6 +96,8 @@ pub struct Window {
     scale: f32,
     /// A `FrameRequested` went out and its `Frame` has not come back.
     pending: bool,
+    /// What the window shows where nothing is drawn. Opaque.
+    clear: Color,
 }
 
 impl Window {
@@ -105,6 +111,13 @@ impl Window {
     pub fn is_pending(&self) -> bool {
         self.pending
     }
+
+    /// The colour the window clears to: black unless the builder said
+    /// otherwise. What a renderer knows is behind everything at the top
+    /// level.
+    pub fn clear(&self) -> Color {
+        self.clear
+    }
 }
 
 /// A window with no title and the default window style: a column, sized
@@ -113,6 +126,7 @@ pub fn window() -> WindowBuilder {
     WindowBuilder {
         title: String::new(),
         layout: LayoutStyle::default().column(),
+        clear: Color::BLACK,
     }
 }
 
@@ -122,6 +136,7 @@ pub fn window() -> WindowBuilder {
 pub struct WindowBuilder {
     title: String,
     layout: LayoutStyle,
+    clear: Color,
 }
 
 impl WindowBuilder {
@@ -136,6 +151,13 @@ impl WindowBuilder {
     /// a size writes `LayoutStyle::default().column().size(..)`.
     pub fn layout(mut self, style: LayoutStyle) -> Self {
         self.layout = style;
+        self
+    }
+
+    /// The colour the window clears to. Black by default. A window is
+    /// opaque; an alpha below one is not rejected but no WSI supports it.
+    pub fn clear(mut self, color: Color) -> Self {
+        self.clear = color;
         self
     }
 }
@@ -160,6 +182,7 @@ impl Widget for Window {
             title: b.title,
             scale: 1.0,
             pending: false,
+            clear: b.clear,
         }
     }
 }

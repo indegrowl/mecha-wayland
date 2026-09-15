@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 
 use app::prelude::*;
-use geometry::{Rect, Size};
+use geometry::{Color, Rect, Size};
 use layout::prelude::*;
 use window::prelude::*;
 
@@ -482,4 +482,18 @@ fn close_requested_is_the_spawn_sites_to_handle() {
     app.tick();
     assert!(!app.is_live(win));
     assert!(windows(&app).is_empty());
+}
+
+// ── the clear colour ─────────────────────────────────────────────────────
+
+#[test]
+fn a_window_clears_to_black_unless_told_otherwise() {
+    let mut app = app();
+    let plain = app.spawn(app.root(), a_window());
+    let tinted = app.spawn(app.root(), a_window().clear(Color::from_rgb8(10, 20, 30)));
+    assert_eq!(app.widget::<Window>(plain).unwrap().clear(), Color::BLACK);
+    assert_eq!(
+        app.widget::<Window>(tinted).unwrap().clear(),
+        Color::from_rgb8(10, 20, 30)
+    );
 }
