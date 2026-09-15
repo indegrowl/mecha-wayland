@@ -120,6 +120,12 @@ impl Scene {
     /// The commands for a buffer of `age`: the scissor is the union of the
     /// newest `age` frames' damage, or the window when `age` is 0 or past
     /// the frames held; each pass gets the commands that touch it.
+    ///
+    /// The union is one pass, newest frame first and push order within a
+    /// frame: a rect is dropped when a rect already kept contains it; a
+    /// kept rect is not removed when a later, larger one arrives. So a
+    /// widget repainting every frame is cleared and drawn once, not once
+    /// per age.
     pub(crate) fn queue(&mut self, age: usize) -> &Queue {
         let window = self.window_rect();
         let q = &mut self.queue;
@@ -130,7 +136,11 @@ impl Scene {
         q.scissor.clear();
         if age >= 1 && age <= self.history.len() {
             for list in self.history.iter().take(age) {
-                q.scissor.extend_from_slice(list);
+                for r in list.iter().copied() {
+                    if !q.scissor.iter().any(|kept| rect::contains(*kept, r)) {
+                        q.scissor.push(r);
+                    }
+                }
             }
             collapse(&mut q.scissor);
         } else if !window.is_empty() {
@@ -258,6 +268,37 @@ mod tests {
         assert_eq!(s.queue(2).scissor, vec![b, a], "newest first");
         assert_eq!(s.queue(3).scissor, vec![WINDOW], "past the two frames held");
         assert_eq!(s.queue(0).scissor, vec![WINDOW], "an unknown buffer");
+    }
+
+    #[test]
+    fn the_union_drops_a_rect_another_contains() {
+        let a = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let inner = Rect::new(5.0, 5.0, 5.0, 5.0);
+        let mut s = Scene::new(3);
+        assert!(s.begin(WINDOW.size, 1.0, Color::BLACK), "the first frame");
+        s.finish(true, 1);
+        for d in [a, a, inner] {
+            s.begin(WINDOW.size, 1.0, Color::BLACK);
+            s.damage.push(d);
+            s.finish(false, 1);
+        }
+        assert_eq!(
+            s.queue(3).scissor,
+            vec![inner, a],
+            "newest first; the second a is the first one again"
+        );
+        assert_eq!(
+            s.queue(2).scissor,
+            vec![inner, a],
+            "a is kept though it arrived after the rect it contains"
+        );
+
+        // One frame's own list is deduplicated the same way.
+        s.begin(WINDOW.size, 1.0, Color::BLACK);
+        s.damage.push(a);
+        s.damage.push(inner);
+        s.finish(false, 1);
+        assert_eq!(s.queue(1).scissor, vec![a], "inner is inside a");
     }
 
     #[test]

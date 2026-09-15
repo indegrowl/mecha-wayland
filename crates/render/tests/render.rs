@@ -756,8 +756,8 @@ fn a_hidden_node_damages_its_old_rect_and_draws_nothing() {
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(
         q.scissor,
-        vec![A_RECT, B_RECT, A_RECT],
-        "A's old; B's old and new"
+        vec![A_RECT, B_RECT],
+        "A's old; B's old and new, and B's new is A's old"
     );
     assert_eq!(q.opaque.commands.len(), 1);
     assert_eq!(q.opaque.commands[0].color, GREEN, "B, now at the top");
