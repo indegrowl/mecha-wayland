@@ -82,6 +82,12 @@ pub struct ObjectId(pub u32);
 pub const DISPLAY: ObjectId = ObjectId(1);
 pub const SERVER_ID_BASE: u32 = 0xff00_0000;
 
+/// libwayland's `MAX_FDS_OUT`, and the read side's own cap in
+/// [`Wayland::arm_read`]: a compositor sizes its `recvmsg` control buffer
+/// for 28 descriptors, and a `sendmsg` carrying more is truncated
+/// (`MSG_CTRUNC`) with the excess silently lost.
+pub const MAX_FDS_OUT: usize = 28;
+
 /// What the connection knows about an interface: its name, its XML
 /// version and the decoder that turns one event into a signal.
 pub struct Info {
@@ -116,6 +122,9 @@ pub struct Wayland {
     fd: OwnedFd,
     out: Vec<u8>,
     out_fds: Vec<OwnedFd>,
+    /// For each fd in `out_fds`, the offset in `out` of the message that
+    /// carries it, so [`Wayland::flush`] can split on a message boundary.
+    fd_at: Vec<usize>,
     objects: Vec<Option<Object>>,
     server: HashMap<u32, Object>,
     free: Vec<u32>,
@@ -139,6 +148,7 @@ impl Wayland {
             fd: OwnedFd::from(stream),
             out: Vec::with_capacity(4096),
             out_fds: Vec::new(),
+            fd_at: Vec::new(),
             objects: vec![None, Some(display)],
             server: HashMap::new(),
             free: Vec::new(),
@@ -198,8 +208,13 @@ impl Wayland {
     }
 
     /// Record an object the server created (an event's `new_id`), or any
-    /// id the caller wants known.
+    /// id the caller wants known. [`DISPLAY`] is never overwritten: it is
+    /// the connection itself and its decoder is what reports a protocol
+    /// error.
     pub fn register(&mut self, id: ObjectId, info: &'static Info, version: u32) {
+        if id == DISPLAY {
+            return;
+        }
         let object = Object { info, version };
         if id.0 >= SERVER_ID_BASE {
             self.server.insert(id.0, object);
@@ -232,8 +247,14 @@ impl Wayland {
             .1
     }
 
-    /// Forget an id; a client id goes back to the free list.
+    /// Forget an id; a client id goes back to the free list. [`DISPLAY`]
+    /// is never freed: a `delete_id(1)` would take the display out of the
+    /// table and every later `wl_display.error` would be skipped by
+    /// [`dispatch_all`] instead of panicking.
     pub fn free(&mut self, id: ObjectId) {
+        if id == DISPLAY {
+            return;
+        }
         if id.0 >= SERVER_ID_BASE {
             self.server.remove(&id.0);
         } else if let Some(slot) = self.objects.get_mut(id.0 as usize)
@@ -245,8 +266,14 @@ impl Wayland {
 
     /// Append one request. Generated methods call this.
     pub fn request(&mut self, sender: ObjectId, opcode: u16, args: impl FnOnce(&mut Writer<'_>)) {
-        let mut w = Writer::begin(&mut self.out, &mut self.out_fds, sender, opcode);
-        args(&mut w);
+        let start = self.out.len();
+        {
+            let mut w = Writer::begin(&mut self.out, &mut self.out_fds, sender, opcode);
+            args(&mut w);
+        }
+        // Every fd this request queued belongs to the message that starts
+        // at `start`; `fd_at` was as long as `out_fds` before the write.
+        self.fd_at.resize(self.out_fds.len(), start);
     }
 
     /// Whether requests are buffered and not yet sent.
@@ -258,16 +285,39 @@ impl Wayland {
     /// the buffer the last read gave back.
     pub fn arm_read(&mut self, ring: &mut Ring, buf: Vec<u8>) {
         debug_assert!(self.reading.is_none(), "wayland: a read is already armed");
-        self.reading = Some(ring.recvmsg(self.fd.as_fd(), buf, 28));
+        self.reading = Some(ring.recvmsg(self.fd.as_fd(), buf, MAX_FDS_OUT));
     }
 
-    /// Send what is buffered, if nothing is in flight.
+    /// Send what is buffered, if nothing is in flight. At most
+    /// [`MAX_FDS_OUT`] fds go in one `sendmsg`: the send is cut at the
+    /// message boundary before the one carrying the next fd, and the rest
+    /// waits for the next `BeforeWait`.
     pub fn flush(&mut self, ring: &mut Ring) {
         if self.out.is_empty() || self.sending.is_some() {
             return;
         }
-        let buf = mem::take(&mut self.out);
-        let fds = mem::take(&mut self.out_fds);
+        // A cut at zero would mean one message carrying more than 28 fds,
+        // which no protocol has; sending it whole is better than stalling.
+        let cut = (self.out_fds.len() > MAX_FDS_OUT)
+            .then(|| self.fd_at[MAX_FDS_OUT])
+            .filter(|&cut| cut > 0);
+        let (buf, fds) = match cut {
+            Some(cut) => {
+                let rest = self.out.split_off(cut);
+                let buf = mem::replace(&mut self.out, rest);
+                let rest_fds = self.out_fds.split_off(MAX_FDS_OUT);
+                let fds = mem::replace(&mut self.out_fds, rest_fds);
+                self.fd_at.drain(..MAX_FDS_OUT);
+                for at in &mut self.fd_at {
+                    *at -= cut;
+                }
+                (buf, fds)
+            }
+            None => {
+                self.fd_at.clear();
+                (mem::take(&mut self.out), mem::take(&mut self.out_fds))
+            }
+        };
         self.sending = Some(ring.sendmsg(self.fd.as_fd(), buf, fds));
     }
 }
@@ -305,8 +355,15 @@ pub(crate) fn on_io(app: &mut App, e: &IoEvent) {
             wl.sending = None;
             if sent < done.buf.len() {
                 let mut tail = done.buf[sent..].to_vec();
+                let shift = tail.len();
                 tail.append(&mut wl.out);
                 wl.out = tail;
+                // The tail goes before everything queued since, so every
+                // still-queued fd's message moved along by its length. The
+                // fds this send carried went with it and are dropped.
+                for at in &mut wl.fd_at {
+                    *at += shift;
+                }
             }
         }
         Io::Read => {
@@ -335,6 +392,16 @@ pub(crate) fn on_io(app: &mut App, e: &IoEvent) {
 /// Signal every complete message in `bytes`, in order; return how many
 /// bytes were consumed. A message for an object the table does not know
 /// is skipped whole.
+///
+/// The unknown-object skip below is the only skip this function makes,
+/// and it is the only one the invariant there covers. A decoder has two
+/// more: an opcode it does not know, and an argument whose body does not
+/// parse. Neither is this function's to fix, because only the decoder
+/// knows how many fds the message carries, so a generated `decode` pops
+/// its opcode's fds before it parses anything and drops them on the way
+/// out — see the generator's `gen_events`. An opcode no decoder knows
+/// carries an unknowable number of fds; the compositor only sends one
+/// above the version the object was bound at, which is its own bug.
 fn dispatch_all(app: &mut App, bytes: &[u8], fds: &mut VecDeque<OwnedFd>) -> usize {
     let mut o = 0;
     while let Some(h) = wire::header(&bytes[o..]) {
@@ -587,6 +654,23 @@ mod tests {
         wl.register(id, Probe::INFO, 1);
         assert_eq!(wl.info(id).map(|(i, _)| i.name), Some("probe"));
         assert_eq!(wl.alloc::<Probe>(1).0, ObjectId(2), "unaffected");
+    }
+
+    #[test]
+    fn the_display_is_neither_freed_nor_overwritten() {
+        let mut wl = wl();
+        wl.free(DISPLAY);
+        wl.register(DISPLAY, Probe::INFO, 3);
+        assert_eq!(
+            wl.info(DISPLAY).map(|(i, _)| i.name),
+            Some(WlDisplay::NAME),
+            "a delete_id(1) would otherwise swallow every later error"
+        );
+        assert_eq!(
+            wl.alloc::<Probe>(1).0,
+            ObjectId(2),
+            "1 is not on the free list"
+        );
     }
 
     #[test]

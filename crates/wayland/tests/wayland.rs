@@ -236,3 +236,227 @@ fn the_registry_keeps_being_followed_after_install() {
     assert!(f.app.resource::<Globals>().find("wl_output").is_none());
     assert_eq!(f.app.resource::<Globals>().iter().count(), 3);
 }
+
+// ── final review ─────────────────────────────────────────────────────────
+
+/// A `wl_keyboard`, bound through the seat the fixture advertises.
+fn keyboard(f: &mut Fake) -> WlKeyboard {
+    let global = f
+        .app
+        .resource::<Globals>()
+        .find("wl_seat")
+        .cloned()
+        .unwrap();
+    let seat: WlSeat = {
+        let (globals, mut wl) = f.app.query::<(Res<Globals>, ResMut<Wayland>)>();
+        globals.bind::<WlSeat>(&global, &mut wl)
+    };
+    let keyboard = seat.get_keyboard(&mut f.app.resource_mut::<Wayland>());
+    f.turn();
+    keyboard
+}
+
+/// Logs the first byte readable on a `keymap` event's fd, so a test can
+/// say which of the fds it sent the event carries.
+fn log_keymap_fd(app: &mut App, e: &WlKeyboardEvent) {
+    let WlKeyboardEvent::Keymap { fd, .. } = e else {
+        return;
+    };
+    let mut byte = [0u8; 1];
+    let mut file = std::fs::File::from(fd.try_clone().expect("dup the keymap fd"));
+    std::io::Read::read_exact(&mut file, &mut byte).expect("read the keymap fd");
+    app.resource_mut::<Log>()
+        .0
+        .push(format!("keymap fd {}", byte[0] as char));
+}
+
+/// A pipe whose read end is ready to hand over, with `mark` in it. The
+/// write end is returned so it stays open: an fd the app drops without
+/// reading would otherwise be indistinguishable from one it read.
+fn marked_pipe(mark: u8) -> (std::io::PipeReader, std::io::PipeWriter) {
+    let (r, mut w) = std::io::pipe().expect("pipe");
+    std::io::Write::write_all(&mut w, &[mark]).expect("mark the pipe");
+    (r, w)
+}
+
+#[test]
+fn an_event_whose_body_does_not_decode_still_consumes_its_own_fd() {
+    let mut f = fake();
+    f.app.system(log_keymap_fd);
+    let keyboard = keyboard(&mut f);
+    let (first, _a) = marked_pipe(b'1');
+    let (second, _b) = marked_pipe(b'2');
+
+    let mut bytes = Vec::new();
+    let mut none = Vec::new();
+    {
+        // Not a `wl_keyboard.keymap_format`: `decode` bails on the enum,
+        // before it would have reached the fd.
+        let mut w = wayland::wire::Writer::begin(&mut bytes, &mut none, keyboard.id(), 0);
+        w.uint(99);
+        w.uint(64);
+    }
+    {
+        let mut w = wayland::wire::Writer::begin(&mut bytes, &mut none, keyboard.id(), 0);
+        w.uint(1);
+        w.uint(65);
+    }
+    let peer = f.peer().try_clone_to_owned().unwrap();
+    let token = f.app.resource_mut::<Ring>().sendmsg(
+        peer.as_fd(),
+        bytes,
+        vec![first.into(), second.into()],
+    );
+    Ring::turn(&mut f.app);
+    f.app.resource_mut::<Ring>().finish(token);
+
+    let l = log(&f);
+    let fds: Vec<&String> = l.iter().filter(|s| s.starts_with("keymap fd ")).collect();
+    assert_eq!(
+        fds,
+        vec!["keymap fd 2"],
+        "the skipped event took its own fd with it: {l:?}"
+    );
+    assert_eq!(
+        l.iter().filter(|s| s.starts_with("Keymap")).count(),
+        1,
+        "only the second event decoded: {l:?}"
+    );
+}
+
+#[test]
+fn a_flush_sends_no_more_than_twenty_eight_fds_and_keeps_the_rest() {
+    let mut f = fake();
+    let shm = *f.app.resource::<WlShm>();
+    let (_r, w) = std::io::pipe().unwrap();
+    {
+        let mut wl = f.app.resource_mut::<Wayland>();
+        for size in 1..=30 {
+            shm.create_pool(&mut wl, w.as_fd(), size);
+        }
+    }
+
+    let peer = f.peer().try_clone_to_owned().unwrap();
+    let token = f
+        .app
+        .resource_mut::<Ring>()
+        .recvmsg(peer.as_fd(), Vec::with_capacity(4096), 64);
+    Ring::turn(&mut f.app);
+    let first = f.app.resource_mut::<Ring>().finish(token).unwrap();
+    assert_eq!(first.fds.len(), 28, "libwayland's MAX_FDS_OUT");
+    assert!(
+        f.app.resource::<Wayland>().has_pending(),
+        "the two messages past the cut are still buffered"
+    );
+
+    let token = f
+        .app
+        .resource_mut::<Ring>()
+        .recvmsg(peer.as_fd(), Vec::with_capacity(4096), 64);
+    Ring::turn(&mut f.app);
+    let second = f.app.resource_mut::<Ring>().finish(token).unwrap();
+    assert_eq!(second.fds.len(), 2, "the rest, in the next send");
+
+    let mut bytes = first.buf;
+    bytes.extend_from_slice(&second.buf);
+    assert_eq!(
+        create_pool_sizes(&bytes, shm.id()),
+        (1..=30).collect::<Vec<_>>(),
+        "every request whole and in order"
+    );
+}
+
+/// The `size` argument of each `wl_shm.create_pool` in `bytes`, which
+/// must be nothing but whole `create_pool` requests from `shm`.
+fn create_pool_sizes(bytes: &[u8], shm: ObjectId) -> Vec<i32> {
+    let mut sizes = Vec::new();
+    let mut o = 0;
+    while let Some(h) = wayland::wire::header(&bytes[o..]) {
+        assert!(o + h.size <= bytes.len(), "a truncated request");
+        assert_eq!((h.sender, h.opcode), (shm, 0));
+        let mut r = wayland::wire::Reader::new(&bytes[o + 8..o + h.size]);
+        r.object().expect("the new pool id");
+        sizes.push(r.int().expect("the pool size"));
+        o += h.size;
+    }
+    assert_eq!(o, bytes.len(), "a trailing part of a request");
+    sizes
+}
+
+#[test]
+fn a_short_send_keeps_its_tail_and_finishes_it_on_a_later_turn() {
+    let mut f = fake();
+    let compositor = *f.app.resource::<WlCompositor>();
+    let surface = compositor.create_surface(&mut f.app.resource_mut::<Wayland>());
+    f.turn();
+
+    // Far more than a unix socket's send buffer (~208 KiB by default), in
+    // messages the wire's 16-bit size word can hold.
+    const MESSAGES: u32 = 32;
+    let payload = vec![0xabu8; 32000];
+    let one = 8 + 4 + 4 + payload.len();
+    {
+        let mut wl = f.app.resource_mut::<Wayland>();
+        for i in 0..MESSAGES {
+            wl.request(surface.id(), 9, |w| {
+                w.uint(i);
+                w.array(&payload);
+            });
+        }
+    }
+
+    let peer_fd = f.peer().try_clone_to_owned().unwrap();
+    let mut peer = UnixStream::from(peer_fd);
+    let mut got: Vec<u8> = Vec::new();
+    let drain = |peer: &mut UnixStream, got: &mut Vec<u8>| {
+        let mut tmp = vec![0u8; 64 * 1024];
+        loop {
+            match std::io::Read::read(peer, &mut tmp) {
+                Ok(0) => break,
+                Ok(n) => got.extend_from_slice(&tmp[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("read from the app: {e}"),
+            }
+        }
+    };
+
+    Ring::turn(&mut f.app);
+    assert!(
+        f.app.resource::<Wayland>().has_pending(),
+        "one send cannot have taken it all"
+    );
+    drain(&mut peer, &mut got);
+    assert!(
+        got.len() < MESSAGES as usize * one,
+        "the send was short: {} of {} bytes",
+        got.len(),
+        MESSAGES as usize * one
+    );
+
+    // Draining lets the rest go out; the tail must go before anything the
+    // next turn would otherwise send first.
+    let mut turns = 0;
+    while f.app.resource::<Wayland>().has_pending() {
+        Ring::turn(&mut f.app);
+        drain(&mut peer, &mut got);
+        turns += 1;
+        assert!(turns < 64, "the app never finishes sending");
+    }
+    assert_eq!(got.len(), MESSAGES as usize * one, "every byte, once");
+
+    let mut o = 0;
+    let mut seen = Vec::new();
+    while let Some(h) = wayland::wire::header(&got[o..]) {
+        assert!(o + h.size <= got.len(), "a truncated request");
+        assert_eq!((h.sender, h.opcode), (surface.id(), 9));
+        let mut r = wayland::wire::Reader::new(&got[o + 8..o + h.size]);
+        seen.push(r.uint().expect("the index"));
+        assert_eq!(r.array().as_deref(), Some(&payload[..]), "a whole body");
+        o += h.size;
+    }
+    assert_eq!(
+        seen,
+        (0..MESSAGES).collect::<Vec<_>>(),
+        "whole and in order"
+    );
+}

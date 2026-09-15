@@ -309,8 +309,21 @@ fn gen_events(
         .map(|(opcode, ev)| {
             let opcode = opcode as u16;
             let v = id(&variant_name(&ev.name));
-            let reads: Vec<TokenStream> =
-                ev.args.iter().map(|a| gen_read(&iface.name, a)).collect();
+            // Every `fd` argument is popped first, in wire order, before
+            // anything that can fail to parse: a `?` on a later argument
+            // then drops (closes) this message's fds rather than leaving
+            // them in the queue for the next event to pop by mistake.
+            // `fds` is positional, so one mis-consumed fd desyncs the rest
+            // of the connection. Popping early is safe because an `fd`
+            // argument takes no bytes off the wire, so it does not move
+            // the reader.
+            let (fd_args, body_args): (Vec<&Arg>, Vec<&Arg>) =
+                ev.args.iter().partition(|a| a.arg_type == ArgType::Fd);
+            let reads: Vec<TokenStream> = fd_args
+                .iter()
+                .chain(body_args.iter())
+                .map(|a| gen_read(&iface.name, a))
+                .collect();
             let names: Vec<Ident> = ev.args.iter().map(|a| id(&a.name)).collect();
             quote! {
                 #opcode => {
