@@ -15,7 +15,7 @@ ring.workspace = true
 window.workspace = true
 
 [workspace]
-members = ["crates/app", "crates/geometry", "crates/layout", "crates/paint", "crates/render", "crates/ring", "crates/window"]
+members = ["crates/app", "crates/geometry", "crates/layout", "crates/paint", "crates/render", "crates/ring", "crates/wayland", "crates/window"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -25,6 +25,7 @@ layout = { path = "crates/layout" }
 paint = { path = "crates/paint" }
 render = { path = "crates/render" }
 ring = { path = "crates/ring" }
+wayland = { path = "crates/wayland" }
 window = { path = "crates/window" }
 io-uring = "0.7"
 libc = "0.2"
