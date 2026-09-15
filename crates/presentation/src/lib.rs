@@ -242,6 +242,14 @@ fn device(size: Size, scale: i32) -> (u32, u32) {
     )
 }
 
+/// Forget both buffers' owner rows, then destroy the buffers and the pool.
+fn teardown_buffers(buffers: Buffers, owner: &mut HashMap<ObjectId, NodeId>, wl: &mut Wayland) {
+    for s in &buffers.slots {
+        owner.remove(&s.buffer.id());
+    }
+    buffers.destroy(wl);
+}
+
 /// Drop the buffers, if any, and make new ones at the entry's size and
 /// scale, owned by `w`.
 fn replace_buffers(
@@ -252,10 +260,7 @@ fn replace_buffers(
     w: NodeId,
 ) {
     if let Some(old) = entry.buffers.take() {
-        for s in &old.slots {
-            owner.remove(&s.buffer.id());
-        }
-        old.destroy(wl);
+        teardown_buffers(old, owner, wl);
     }
     let (dw, dh) = device(entry.size, entry.scale);
     let buffers = Buffers::create(wl, shm, dw, dh);
@@ -555,10 +560,7 @@ fn on_removed(app: &mut App, _: &Removed) {
             }
         }
         if let Some(buffers) = entry.buffers {
-            for slot in &buffers.slots {
-                s.owner.remove(&slot.buffer.id());
-            }
-            buffers.destroy(&mut wl);
+            teardown_buffers(buffers, &mut s.owner, &mut wl);
         }
         entry.surface.destroy(&mut wl);
         s.owner.remove(&entry.surface.id());
