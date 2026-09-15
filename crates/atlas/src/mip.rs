@@ -8,8 +8,12 @@ use crate::{Bitmap, Page};
 /// `src` is `width` by `height` with `channels` bytes per pixel. The
 /// result is `max(width / 2, 1)` by `max(height / 2, 1)`. Four channels
 /// are averaged premultiplied and stored straight again; a block whose
-/// alpha sums to zero stays zero.
+/// alpha sums to zero stays zero. Empty when `width == 0 || height == 0`,
+/// so a zero-dimension region never indexes past the (empty) slice.
 pub(crate) fn downsample(src: &[u8], width: u32, height: u32, channels: usize) -> Vec<u8> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
     let (w, h) = (width as usize, height as usize);
     let (ow, oh) = ((w / 2).max(1), (h / 2).max(1));
     let mut out = vec![0u8; ow * oh * channels];
@@ -57,6 +61,9 @@ impl Page {
         let y0 = rect.y() as u32;
         let w0 = (rect.width() as u32).div_ceil(align) * align;
         let h0 = (rect.height() as u32).div_ceil(align) * align;
+        if w0 == 0 || h0 == 0 {
+            return;
+        }
         for k in 1..self.levels() {
             let (sx, sy, sw, sh) = (x0 >> (k - 1), y0 >> (k - 1), w0 >> (k - 1), h0 >> (k - 1));
             let src_side = Page::dims(k - 1) as usize;
@@ -85,8 +92,11 @@ impl Page {
 
 impl Bitmap {
     /// Halve through the mip filter until both sides are at most `max`.
-    /// A bitmap that already fits is returned as is.
+    /// A bitmap that already fits is returned as is. `max` clamps to at
+    /// least 1, so a caller passing 0 terminates at a 1 by 1 bitmap
+    /// instead of looping forever.
     pub fn fit(mut self, max: u32) -> Bitmap {
+        let max = max.max(1);
         while self.width > max || self.height > max {
             let channels = self.format.bytes();
             self.pixels = downsample(&self.pixels, self.width, self.height, channels);
@@ -124,6 +134,12 @@ mod tests {
     fn odd_sizes_round_down_to_at_least_one() {
         let src = vec![100u8; 3 * 1];
         assert_eq!(downsample(&src, 3, 1, 1), vec![100]);
+    }
+
+    #[test]
+    fn downsample_of_an_empty_region_is_empty() {
+        assert_eq!(downsample(&[], 0, 0, 1), Vec::<u8>::new());
+        assert_eq!(downsample(&[], 0, 5, 4), Vec::<u8>::new());
     }
 
     #[test]
@@ -188,5 +204,18 @@ mod tests {
             pixels: vec![1; 400],
         };
         assert_eq!(small.clone().fit(64), small, "already fits: unchanged");
+    }
+
+    #[test]
+    fn fit_with_a_zero_max_terminates_at_one_pixel() {
+        let b = Bitmap {
+            width: 8,
+            height: 4,
+            format: Format::R8,
+            pixels: vec![9; 8 * 4],
+        };
+        let f = b.fit(0);
+        assert_eq!((f.width, f.height), (1, 1));
+        assert_eq!(f.pixels.len(), 1);
     }
 }

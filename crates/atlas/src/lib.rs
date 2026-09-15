@@ -287,12 +287,22 @@ impl Atlas {
     /// (`Class::Image`, `Rgba8`) at its master size. There is no key: the
     /// caller keeps the id. `Error::Class` for any other class or a format
     /// the class does not take; `Error::TooLarge` for a bitmap no empty
-    /// page of the class fits, which `Bitmap::fit` cures.
+    /// page of the class fits, which `Bitmap::fit` cures. A zero-dimension
+    /// bitmap (`width == 0 || height == 0`) never packs: it returns `Ok`
+    /// with an empty tile, `AtlasTile { atlas: AtlasId::default(), bounds:
+    /// Rect::ZERO }`, mirroring a glyph with no ink.
     pub fn insert(&mut self, class: Class, bitmap: &Bitmap) -> Result<SpriteId, Error> {
         if !matches!(class, Class::Icon | Class::Image) {
             return Err(Error::Class);
         }
-        let tile = self.pack(class, bitmap)?;
+        let tile = if bitmap.width == 0 || bitmap.height == 0 {
+            AtlasTile {
+                atlas: AtlasId::default(),
+                bounds: Rect::ZERO,
+            }
+        } else {
+            self.pack(class, bitmap)?
+        };
         let id = SpriteId(self.sprites.len() as u32);
         self.sprites.push(Sprite {
             tile,

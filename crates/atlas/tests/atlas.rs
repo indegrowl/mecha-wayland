@@ -92,6 +92,21 @@ fn insert_rejects_the_wrong_class_or_format_and_too_large() {
 }
 
 #[test]
+fn a_zero_sized_bitmap_inserts_as_an_empty_tile() {
+    let mut atlas = Atlas::new();
+    let a = atlas.insert(Class::Image, &image(0, 0)).unwrap();
+    let b = atlas.insert(Class::Image, &image(0, 8)).unwrap();
+    assert_eq!(atlas.sprite(a).tile.bounds, Rect::ZERO);
+    assert_eq!(atlas.sprite(a).size, geometry::Size::new(0.0, 0.0));
+    assert_eq!(atlas.sprite(b).tile.bounds, Rect::ZERO);
+    assert_eq!(atlas.sprite(b).size, geometry::Size::new(0.0, 8.0));
+    assert_eq!(atlas.pages().count(), 0, "no page was opened");
+    let mut cells = 0;
+    atlas.drain_dirty(|_, _| cells += 1);
+    assert_eq!(cells, 0, "nothing to drain for an empty tile");
+}
+
+#[test]
 fn inserts_share_a_page_until_it_is_full_and_earlier_tiles_stay() {
     let mut atlas = Atlas::new();
     let a = atlas.insert(Class::Icon, &icon(64)).unwrap();
