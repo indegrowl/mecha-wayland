@@ -24,28 +24,22 @@ pub(crate) struct Scene {
     /// Every translucent command of the last walk, z ascending after `finish`.
     pub(crate) translucent: Vec<Command>,
     /// What last frame drew: each node with the bounds of its commands.
-    #[allow(dead_code)] // until Task 4
     pub(crate) drawn: Vec<(NodeId, Rect)>,
     /// What this frame is drawing; swapped into `drawn` by `finish`.
-    #[allow(dead_code)] // until Task 4
     pub(crate) drawing: Vec<(NodeId, Rect)>,
     /// This frame's damage as the walk collects it, device pixels, not
     /// yet clamped.
-    #[allow(dead_code)] // until Task 4
     pub(crate) damage: Vec<Rect>,
     /// The last `buffers` frames' damage, newest first, each clamped and
     /// collapsed.
     history: VecDeque<Vec<Rect>>,
-    #[allow(dead_code)] // until Task 4
     buffers: usize,
     /// No frame has been walked yet.
-    #[allow(dead_code)] // until Task 4
     fresh: bool,
     queue: Queue,
 }
 
 impl Scene {
-    #[allow(dead_code)] // until Task 4
     pub(crate) fn new(buffers: usize) -> Self {
         Self {
             size: Size::ZERO,
@@ -72,7 +66,6 @@ impl Scene {
     /// Start a frame: store the window's facts and empty this frame's
     /// lists. Returns whether the whole window is damaged: the first
     /// frame, or a size or scale that differs from last frame's.
-    #[allow(dead_code)] // until Task 4
     pub(crate) fn begin(&mut self, size: Size, scale: f32, clear: Color) -> bool {
         let full = self.fresh || self.size != size || self.scale != scale;
         self.fresh = false;
@@ -90,7 +83,6 @@ impl Scene {
     /// over as what was drawn, and file this frame's damage, the whole
     /// window if `full`. `visited` is how many nodes the walk took a z
     /// for.
-    #[allow(dead_code)] // until Task 4
     pub(crate) fn finish(&mut self, full: bool, visited: u32) {
         self.depth = 2.0 * visited as f32;
         self.opaque.sort_by(|a, b| b.z.total_cmp(&a.z));
@@ -171,7 +163,6 @@ fn fill(pass: &mut Pass, commands: &[Command], scissor: &[Rect]) {
 }
 
 /// Cut every rect to the window and drop what falls outside.
-#[allow(dead_code)] // until Task 4
 fn clamp(rects: &mut Vec<Rect>, window: Rect) {
     rects.retain_mut(|r| {
         *r = rect::intersection(*r, window);

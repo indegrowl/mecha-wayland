@@ -1,0 +1,396 @@
+//! The walk: one window's subtree in preorder, `Layout` and `Paint` read
+//! into commands in device pixels, the solid behind each node carried
+//! down, and the damage of dirty nodes collected. Nothing here is a
+//! system; `on_frame` calls [`walk`] once per `Frame`.
+
+use app::{Comps, CompsMut, NodeId, Tree};
+use geometry::{Color, Corners, Insets, Rect};
+use layout::Layout;
+use paint::{MonochromeSprite, Paint, PolychromeSprite, Quad};
+
+use crate::{Command, Drawn, NO_TILE, rect, scene::Scene};
+
+/// A colour and the device rect known to be exactly that colour behind a
+/// node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Solid {
+    pub(crate) color: Color,
+    pub(crate) rect: Rect,
+}
+
+/// Logical to device: both edges scaled and rounded, so rects that touch
+/// in logical pixels touch in device pixels.
+pub(crate) fn scale_rect(r: Rect, s: f32) -> Rect {
+    let x0 = (r.x() * s).round();
+    let y0 = (r.y() * s).round();
+    let x1 = (r.right() * s).round();
+    let y1 = (r.bottom() * s).round();
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// The rect inside a quad's edges: inset on every side by the larger of
+/// the greatest radius and the greatest border width. Device values in,
+/// device rect out.
+pub(crate) fn interior(r: Rect, radii: Corners<f32>, border: Insets<f32>) -> Rect {
+    let radius = radii
+        .top_left
+        .max(radii.top_right)
+        .max(radii.bottom_right)
+        .max(radii.bottom_left);
+    let width = border
+        .top
+        .max(border.right)
+        .max(border.bottom)
+        .max(border.left);
+    r.inset(Insets::all(radius.max(width).max(0.0)))
+}
+
+/// A border a renderer would draw: some width, and a colour with alpha.
+fn border_visible(q: &Quad) -> bool {
+    let b = q.border;
+    (b.top > 0.0 || b.right > 0.0 || b.bottom > 0.0 || b.left > 0.0)
+        && !q.border_color.is_transparent()
+}
+
+/// The solid a quad's children receive. `inside` says the quad lies
+/// within `solid`'s rect; `interior` is the quad's interior in device
+/// pixels. The flag `is_opaque` plays no part: it picks the pass, and the
+/// pixels are that colour either way.
+pub(crate) fn hand_down(
+    q: &Quad,
+    solid: Option<Solid>,
+    inside: bool,
+    interior: Rect,
+) -> Option<Solid> {
+    // A fill that leaves no pixel is asked first: composited onto a solid
+    // it reads as opaque, and answering that way would narrow the solid
+    // to this quad's interior for no reason.
+    if q.color.is_transparent() {
+        return if border_visible(q) {
+            solid.map(|s| Solid {
+                color: s.color,
+                rect: rect::intersection(s.rect, interior),
+            })
+        } else {
+            solid
+        };
+    }
+    let effective = match (inside, solid) {
+        (true, Some(s)) => q.color.over(s.color),
+        _ => q.color,
+    };
+    if effective.a >= 1.0 {
+        Some(Solid {
+            color: effective,
+            rect: interior,
+        })
+    } else {
+        None
+    }
+}
+
+/// Preorder over `window`'s subtree. Every visited node takes a z; a
+/// visible paint in a non-empty box emits its commands into `scene`; a
+/// dirty node adds its old and new bounds to `scene.damage`; every node
+/// that drew is recorded in `scene.drawing`. Returns how many nodes were
+/// visited.
+pub(crate) fn walk(
+    tree: Tree<'_>,
+    layouts: &Comps<'_, Layout>,
+    paints: &Comps<'_, Paint>,
+    drawn: &mut CompsMut<'_, Drawn>,
+    window: NodeId,
+    scale: f32,
+    clear: Color,
+    scene: &mut Scene,
+) -> u32 {
+    let root_solid = (clear.a >= 1.0).then(|| Solid {
+        color: clear,
+        rect: scene.window_rect(),
+    });
+    let mut stack: Vec<(NodeId, Option<Solid>)> = vec![(window, root_solid)];
+    let mut visited = 0u32;
+    while let Some((id, solid)) = stack.pop() {
+        let z = 2.0 * visited as f32;
+        visited += 1;
+        let (Some(layout), Some(paint)) = (layouts.get(id), paints.get(id)) else {
+            continue;
+        };
+        let r = scale_rect(layout.rect, scale);
+        let mut bounds: Option<Rect> = None;
+        let mut child_solid = solid;
+        if !r.is_empty() && !paint.is_invisible() {
+            match paint {
+                Paint::None => {}
+                Paint::Quad(q) => {
+                    child_solid = emit_quad(q, r, z, solid, scale, scene);
+                    bounds = Some(r);
+                }
+                Paint::Monochrome(run) => {
+                    bounds = emit_run(run, layout.content(), z, solid, scale, scene);
+                }
+                Paint::Polychrome(p) => {
+                    let content = scale_rect(layout.content(), scale);
+                    if !content.is_empty() {
+                        emit_image(p, content, z, solid, scale, scene);
+                        bounds = Some(content);
+                        child_solid = None;
+                    }
+                }
+            }
+        }
+        if let Some(mut d) = drawn.get_mut(id) {
+            if d.dirty {
+                if let Some(old) = d.rect {
+                    scene.damage.push(old);
+                }
+                if let Some(new) = bounds {
+                    scene.damage.push(new);
+                }
+            }
+            d.set_if_neq(Drawn {
+                rect: bounds,
+                dirty: false,
+            });
+        }
+        if let Some(b) = bounds {
+            scene.drawing.push((id, b));
+        }
+        if let Some(children) = tree.children(id) {
+            for &child in children.iter().rev() {
+                stack.push((child, child_solid));
+            }
+        }
+    }
+    visited
+}
+
+/// The quad's three routes, and what it hands down.
+fn emit_quad(
+    q: &Quad,
+    r: Rect,
+    z: f32,
+    solid: Option<Solid>,
+    scale: f32,
+    scene: &mut Scene,
+) -> Option<Solid> {
+    let inside = solid.is_some_and(|s| rect::contains(s.rect, r));
+    let radii = q.radii.map(|v| v * scale);
+    let border = q.border.map(|v| v * scale);
+    let edge_free = q.radii.is_zero() && !border_visible(q);
+    let inner = interior(r, radii, border);
+    let base = Command {
+        rect: r,
+        z,
+        color: q.color,
+        border_color: q.border_color,
+        background: Color::TRANSPARENT,
+        radii,
+        border,
+        tile: NO_TILE,
+        flags: Command::pack(Command::QUAD, false, false, 1.0),
+    };
+    let opaque = Command::pack(Command::QUAD, true, false, 1.0);
+    if q.is_opaque && inside {
+        // The shader composites the whole quad, edges and border included,
+        // onto the solid.
+        let s = solid.expect("inside implies a solid");
+        scene.opaque.push(Command {
+            background: s.color,
+            flags: opaque,
+            ..base
+        });
+    } else if q.is_opaque && edge_free && q.color.a >= 1.0 {
+        // A plain fill.
+        scene.opaque.push(Command {
+            background: q.color,
+            flags: opaque,
+            ..base
+        });
+    } else {
+        scene.translucent.push(base);
+        // The interior split: an opaque fill with edges and nothing known
+        // behind it writes depth for its flat middle.
+        if q.is_opaque && q.color.a >= 1.0 && !inner.is_empty() {
+            scene.opaque.push(Command {
+                rect: inner,
+                z: z + 1.0,
+                border_color: q.color,
+                background: q.color,
+                radii: Corners::all(0.0),
+                border: Insets::all(0.0),
+                flags: opaque,
+                ..base
+            });
+        }
+    }
+    hand_down(q, solid, inside, inner)
+}
+
+/// One command per visible sprite, from the content box's corner. Returns
+/// the union of their rects.
+fn emit_run(
+    run: &[MonochromeSprite],
+    content: Rect,
+    z: f32,
+    solid: Option<Solid>,
+    scale: f32,
+    scene: &mut Scene,
+) -> Option<Rect> {
+    let mut bounds: Option<Rect> = None;
+    for s in run {
+        if s.is_invisible() {
+            continue;
+        }
+        let logical = Rect::new(
+            content.x() + s.offset.x,
+            content.y() + s.offset.y,
+            s.size.width,
+            s.size.height,
+        );
+        let sr = scale_rect(logical, scale);
+        if sr.is_empty() {
+            continue;
+        }
+        let over = if s.is_opaque {
+            solid.filter(|so| rect::contains(so.rect, sr))
+        } else {
+            None
+        };
+        let cmd = Command {
+            rect: sr,
+            z,
+            color: s.color,
+            border_color: s.color,
+            background: over.map_or(Color::TRANSPARENT, |o| o.color),
+            radii: Corners::all(0.0),
+            border: Insets::all(0.0),
+            tile: s.tile,
+            flags: Command::pack(Command::SPRITE, over.is_some(), false, 1.0),
+        };
+        if over.is_some() {
+            scene.opaque.push(cmd);
+        } else {
+            scene.translucent.push(cmd);
+        }
+        bounds = Some(bounds.map_or(sr, |b| rect::union(b, sr)));
+    }
+    bounds
+}
+
+/// One command over the content box. A tile composited onto a known
+/// colour is opaque whatever its alpha, radii included.
+fn emit_image(
+    p: &PolychromeSprite,
+    content: Rect,
+    z: f32,
+    solid: Option<Solid>,
+    scale: f32,
+    scene: &mut Scene,
+) {
+    let over = if p.is_opaque {
+        solid.filter(|so| rect::contains(so.rect, content))
+    } else {
+        None
+    };
+    let cmd = Command {
+        rect: content,
+        z,
+        color: Color::WHITE,
+        border_color: Color::WHITE,
+        background: over.map_or(Color::TRANSPARENT, |o| o.color),
+        radii: p.radii.map(|v| v * scale),
+        border: Insets::all(0.0),
+        tile: p.tile,
+        flags: Command::pack(Command::IMAGE, over.is_some(), p.grayscale, p.opacity),
+    };
+    if over.is_some() {
+        scene.opaque.push(cmd);
+    } else {
+        scene.translucent.push(cmd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RED: Color = Color::rgb(1.0, 0.0, 0.0);
+    const GREEN: Color = Color::rgb(0.0, 1.0, 0.0);
+
+    #[test]
+    fn scaling_rounds_both_edges_so_neighbours_keep_touching() {
+        assert_eq!(
+            scale_rect(Rect::new(0.0, 0.0, 3.0, 3.0), 1.5),
+            Rect::new(0.0, 0.0, 5.0, 5.0)
+        );
+        assert_eq!(
+            scale_rect(Rect::new(3.0, 0.0, 3.0, 3.0), 1.5),
+            Rect::new(5.0, 0.0, 4.0, 5.0)
+        );
+        assert_eq!(
+            scale_rect(Rect::new(1.0, 2.0, 3.0, 4.0), 2.0),
+            Rect::new(2.0, 4.0, 6.0, 8.0)
+        );
+        assert_eq!(
+            scale_rect(Rect::new(1.0, 2.0, 3.0, 4.0), 1.0),
+            Rect::new(1.0, 2.0, 3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn the_interior_is_inset_by_the_larger_of_radius_and_border() {
+        let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+        assert_eq!(
+            interior(r, Corners::all(6.0), Insets::new(8.0, 0.0, 0.0, 0.0)),
+            Rect::new(8.0, 8.0, 84.0, 34.0)
+        );
+        assert_eq!(
+            interior(r, Corners::new(0.0, 6.0, 0.0, 0.0), Insets::all(2.0)),
+            Rect::new(6.0, 6.0, 88.0, 38.0)
+        );
+        assert_eq!(interior(r, Corners::all(0.0), Insets::all(0.0)), r);
+    }
+
+    #[test]
+    fn what_a_quad_hands_down() {
+        let inner = Rect::new(12.0, 12.0, 46.0, 16.0);
+        let black = Some(Solid {
+            color: Color::BLACK,
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+        });
+
+        // An opaque fill: the solid is that colour over the interior.
+        assert_eq!(
+            hand_down(&Quad::new(RED), None, false, inner),
+            Some(Solid {
+                color: RED,
+                rect: inner
+            })
+        );
+        // A translucent fill inside a solid composites to an opaque one.
+        let half = Color::rgba(1.0, 0.0, 0.0, 0.5);
+        assert_eq!(
+            hand_down(&Quad::new(half), black, true, inner),
+            Some(Solid {
+                color: half.over(Color::BLACK),
+                rect: inner
+            })
+        );
+        // A translucent fill with nothing known behind it: nothing known.
+        assert_eq!(hand_down(&Quad::new(half), None, false, inner), None);
+        assert_eq!(hand_down(&Quad::new(half), black, false, inner), None);
+        // A transparent fill with a border narrows the solid to the interior.
+        let ring = Quad::new(Color::TRANSPARENT).border(2.0, GREEN);
+        assert_eq!(
+            hand_down(&ring, black, true, inner),
+            Some(Solid {
+                color: Color::BLACK,
+                rect: inner
+            })
+        );
+        assert_eq!(hand_down(&ring, None, false, inner), None);
+        // A transparent fill with no border passes the solid through.
+        assert_eq!(hand_down(&Quad::default(), black, true, inner), black);
+    }
+}

@@ -10,7 +10,6 @@ pub(crate) fn intersects(a: Rect, b: Rect) -> bool {
 
 /// `inner` lies within `outer`, edges included. An empty `inner` is
 /// within nothing: there is no pixel to know the background of.
-#[allow(dead_code)] // until Task 4
 pub(crate) fn contains(outer: Rect, inner: Rect) -> bool {
     !inner.is_empty()
         && inner.x() >= outer.x()
@@ -35,7 +34,6 @@ pub(crate) fn union(a: Rect, b: Rect) -> Rect {
 }
 
 /// The overlap, or `Rect::ZERO` when there is none.
-#[allow(dead_code)] // until Task 4
 pub(crate) fn intersection(a: Rect, b: Rect) -> Rect {
     let x0 = a.x().max(b.x());
     let y0 = a.y().max(b.y());

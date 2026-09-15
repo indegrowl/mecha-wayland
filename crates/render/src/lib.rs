@@ -4,10 +4,13 @@
 
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Rect, Size};
-use paint::{AtlasId, AtlasTile};
+use layout::Layout;
+use paint::{AtlasId, AtlasTile, Paint};
+use window::{Frame, Window};
 
 mod rect;
 mod scene;
+mod walk;
 
 use scene::Scene;
 
@@ -98,7 +101,6 @@ impl Command {
 }
 
 /// The tile a quad carries: nothing.
-#[allow(dead_code)] // until Task 4
 pub(crate) const NO_TILE: AtlasTile = AtlasTile {
     atlas: AtlasId(0),
     bounds: Rect::ZERO,
@@ -149,7 +151,6 @@ pub struct Queue {
 /// the change systems and the walk; its `OnChanged` drain has no
 /// listener, and `on_frame` takes the record after the walk so the drain
 /// sees only what the change systems marked between frames.
-#[allow(dead_code)] // until Task 4
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct Drawn {
     pub(crate) rect: Option<Rect>,
@@ -165,7 +166,6 @@ impl Component for Drawn {}
 /// One scene per live window. A backend's whole surface is [`Scenes::queue`].
 #[derive(Debug)]
 pub struct Scenes {
-    #[allow(dead_code)] // until Task 4
     buffers: usize,
     scenes: Vec<(NodeId, Scene)>,
 }
@@ -198,7 +198,6 @@ impl Scenes {
         self.scenes.iter().any(|(w, _)| *w == window)
     }
 
-    #[allow(dead_code)] // until Task 4
     pub(crate) fn scene_or_new(&mut self, window: NodeId) -> &mut Scene {
         let i = match self.scenes.iter().position(|(w, _)| *w == window) {
             Some(i) => i,
@@ -241,8 +240,48 @@ impl Module for RenderModule {
     fn install(self, app: &mut App) {
         app.register_component::<Drawn>();
         app.insert_resource(Scenes::new(self.buffers));
-        // The four systems are attached by Tasks 4 and 5.
+        app.system(on_frame);
+        // The change systems are attached by Task 5.
     }
+}
+
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
+
+/// Rebuild the window's scene from the live `Layout` and `Paint`. A stale
+/// id or a non-window is ignored. Nothing here raises `RequestFrame`.
+fn on_frame(app: &mut App, f: &Frame) {
+    let w = f.0;
+    let Some(win) = app.widget::<Window>(w) else {
+        return;
+    };
+    let (scale, clear) = (win.scale(), win.clear());
+    let Some(layout) = app.component::<Layout>(w) else {
+        return;
+    };
+    let size = walk::scale_rect(layout.rect, scale).size;
+
+    let (tree, mut data) = app.split();
+    let (layouts, paints, mut drawn, mut scenes) =
+        data.query::<(&Layout, &Paint, &mut Drawn, ResMut<Scenes>)>();
+    let scene = scenes.scene_or_new(w);
+    let full = scene.begin(size, scale, clear);
+    let visited = walk::walk(tree, &layouts, &paints, &mut drawn, w, scale, clear, scene);
+    // A node drawn last frame and gone now left pixels behind; its
+    // `Drawn` was reset by the core, so last frame's list is the record.
+    for &(id, rect) in &scene.drawn {
+        if !tree.is_live(id) {
+            scene.damage.push(rect);
+        }
+    }
+    scene.finish(full, visited);
+
+    // The walk wrote `Drawn` through flagging guards and `Scenes` through
+    // its guard. Nothing listens for either, so take the records now
+    // rather than have the next `PostTick` drain walk them.
+    app.take_changed::<Drawn>().for_each(drop);
+    app.take_resource_changed::<Scenes>();
 }
 
 #[cfg(test)]
