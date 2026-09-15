@@ -3,6 +3,7 @@
 //! The only unsafe in the workspace lives here.
 #![allow(unsafe_code)]
 
+use std::io;
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
@@ -40,6 +41,10 @@ impl Op {
         let cmsg = if max_fds == 0 {
             Vec::new()
         } else {
+            // Must stay zeroed: `take_fds` relies on a zero `cmsg_len`
+            // terminating the walk. If control buffers are ever pooled
+            // and reused, zero them here rather than handing one back
+            // with a previous completion's headers still in it.
             vec![0u8; cmsg_space(max_fds)]
         };
         // SAFETY: iovec and msghdr are plain C structs; all-zero is valid.
@@ -55,7 +60,7 @@ impl Op {
         });
         op.iov.iov_base = op.buf.as_mut_ptr().cast();
         op.iov.iov_len = op.buf.capacity();
-        op.msg.msg_iov = &mut op.iov;
+        op.msg.msg_iov = &raw mut op.iov;
         op.msg.msg_iovlen = 1;
         if !op.cmsg.is_empty() {
             op.msg.msg_control = op.cmsg.as_mut_ptr().cast();
@@ -83,9 +88,9 @@ impl Op {
             cmsg,
             result: None,
         });
-        op.iov.iov_base = op.buf.as_ptr() as *mut libc::c_void;
+        op.iov.iov_base = op.buf.as_mut_ptr().cast();
         op.iov.iov_len = op.buf.len();
-        op.msg.msg_iov = &mut op.iov;
+        op.msg.msg_iov = &raw mut op.iov;
         op.msg.msg_iovlen = 1;
         if !op.cmsg.is_empty() {
             op.msg.msg_control = op.cmsg.as_mut_ptr().cast();
@@ -110,10 +115,19 @@ impl Op {
 
     /// The submission entry. Valid while this box lives, which is until
     /// `complete`.
+    ///
+    /// A receive asks for `MSG_CMSG_CLOEXEC` so passed fds are not
+    /// inherited across an exec; a send asks for `MSG_NOSIGNAL` so a
+    /// hung-up peer is an `EPIPE` result rather than a `SIGPIPE` that
+    /// kills the process.
     pub(crate) fn entry(&mut self, fd: RawFd) -> squeue::Entry {
         match self.kind {
-            Kind::Recv => opcode::RecvMsg::new(types::Fd(fd), &mut self.msg).build(),
-            Kind::Send => opcode::SendMsg::new(types::Fd(fd), &self.msg).build(),
+            Kind::Recv => opcode::RecvMsg::new(types::Fd(fd), &mut self.msg)
+                .flags(libc::MSG_CMSG_CLOEXEC as u32)
+                .build(),
+            Kind::Send => opcode::SendMsg::new(types::Fd(fd), &self.msg)
+                .flags(libc::MSG_NOSIGNAL as u32)
+                .build(),
         }
     }
 
@@ -158,16 +172,31 @@ impl Drop for Op {
     }
 }
 
+/// Decode the `SCM_RIGHTS` fds in `msg`'s control buffer, taking
+/// ownership of each.
+///
+/// Termination relies on the control buffer being zero-initialised.
+/// io_uring never writes `msg_controllen` back, so it still holds the
+/// whole buffer's length rather than the bytes the kernel filled, and
+/// the walk runs past the last real header into the untouched tail;
+/// libc's linux-gnu `CMSG_NXTHDR` returns null on a zero `cmsg_len`, so
+/// a buffer that started out zeroed ends the walk there. The data
+/// length is clamped to the bytes remaining in the buffer as well, so a
+/// nonsense `cmsg_len` cannot read past the end.
 unsafe fn take_fds(msg: &libc::msghdr) -> Vec<OwnedFd> {
     let mut out = Vec::new();
     if msg.msg_control.is_null() {
         return out;
     }
+    let base = msg.msg_control as usize;
+    let end = base + msg.msg_controllen;
     unsafe {
         let mut c = libc::CMSG_FIRSTHDR(msg);
         while !c.is_null() {
             if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
-                let data = ((*c).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
+                let header = libc::CMSG_LEN(0) as usize;
+                let len = ((*c).cmsg_len as usize).min(end.saturating_sub(c as usize));
+                let data = len.saturating_sub(header);
                 let p = libc::CMSG_DATA(c).cast::<RawFd>();
                 for i in 0..data / mem::size_of::<RawFd>() {
                     out.push(OwnedFd::from_raw_fd(*p.add(i)));
@@ -180,15 +209,29 @@ unsafe fn take_fds(msg: &libc::msghdr) -> Vec<OwnedFd> {
 }
 
 /// Push one entry, submitting first if the queue is full.
+///
+/// # Panics
+///
+/// If the kernel refuses the submission that makes room. Callers that
+/// must not panic (the `Drop` path) use [`try_push`] instead.
 pub(crate) fn push(uring: &mut io_uring::IoUring, entry: squeue::Entry) {
-    loop {
-        // SAFETY: the entry's pointers live in a boxed `Op` kept by the
-        // ring until its completion is finished.
-        if unsafe { uring.submission().push(&entry) }.is_ok() {
-            return;
-        }
-        uring.submit().expect("io_uring submit");
+    try_push(uring, entry).expect("io_uring submit");
+}
+
+/// [`push`], fallible. Bounded: one push, one submit to drain the queue,
+/// one push. A successful `submit` hands the whole submission queue to
+/// the kernel, so the second push has the entire queue to itself and can
+/// only fail if the queue has no slots at all.
+pub(crate) fn try_push(uring: &mut io_uring::IoUring, entry: squeue::Entry) -> io::Result<()> {
+    // SAFETY: the entry's pointers live in a boxed `Op` kept by the
+    // ring until its completion is finished.
+    if unsafe { uring.submission().push(&entry) }.is_ok() {
+        return Ok(());
     }
+    uring.submit()?;
+    // SAFETY: as above.
+    unsafe { uring.submission().push(&entry) }
+        .map_err(|_| io::Error::other("io_uring submission queue full after a submit"))
 }
 
 /// The submission entry that asks the kernel to cancel the op submitted

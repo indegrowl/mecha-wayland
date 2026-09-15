@@ -1,15 +1,19 @@
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use app::prelude::*;
 use ring::prelude::*;
 use ring::{Completed, Ring};
 
-/// Wait until both tokens completed, at most ten waits.
+/// Wait until every token completed, at most ten waits and at most five
+/// seconds. `Ring` is not `Send`, so the waits cannot be moved to a
+/// watched thread; the deadline bounds a wait that keeps returning the
+/// wrong completions, which is what a regression here looks like.
 fn wait_for(ring: &mut Ring, tokens: &[ring::Token]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
     let mut seen = Vec::new();
     for _ in 0..10 {
         for e in ring.wait() {
@@ -18,8 +22,24 @@ fn wait_for(ring: &mut Ring, tokens: &[ring::Token]) {
         if tokens.iter().all(|t| seen.contains(t)) {
             return;
         }
+        assert!(
+            Instant::now() < deadline,
+            "ops did not complete within five seconds: seen {seen:?}"
+        );
     }
     panic!("ops did not complete: seen {seen:?}");
+}
+
+/// The `flags:` line of `/proc/self/fdinfo/<fd>`, which the kernel fills
+/// with the file's status flags plus `O_CLOEXEC` when the descriptor is
+/// close-on-exec. Octal, as `fdinfo` prints it.
+fn fd_flags(fd: std::os::fd::RawFd) -> u32 {
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).unwrap();
+    let line = info
+        .lines()
+        .find_map(|l| l.strip_prefix("flags:"))
+        .expect("fdinfo has a flags line");
+    u32::from_str_radix(line.trim(), 8).expect("the flags are octal")
 }
 
 #[test]
@@ -48,6 +68,28 @@ fn sendmsg_and_recvmsg_move_bytes_and_fds() {
     let mut s = String::new();
     reader.read_to_string(&mut s).unwrap();
     assert_eq!(s, "via fd");
+}
+
+#[test]
+fn a_received_fd_comes_back_close_on_exec() {
+    let (a, b) = UnixStream::pair().unwrap();
+    let (_reader, writer) = std::io::pipe().unwrap();
+    let mut ring = Ring::new(8);
+
+    let sent = ring.sendmsg(a.as_fd(), b"x".to_vec(), vec![OwnedFd::from(writer)]);
+    let recv = ring.recvmsg(b.as_fd(), Vec::with_capacity(8), 4);
+    wait_for(&mut ring, &[sent, recv]);
+    drop(ring.finish(sent).unwrap().fds);
+
+    let Completed { fds, .. } = ring.finish(recv).unwrap();
+    let got = fds.into_iter().next().expect("the fd came through");
+    // `MSG_CMSG_CLOEXEC`: a compositor fd must not survive an exec.
+    const O_CLOEXEC: u32 = 0o2000000;
+    assert_eq!(
+        fd_flags(got.as_raw_fd()) & O_CLOEXEC,
+        O_CLOEXEC,
+        "a received fd is close-on-exec"
+    );
 }
 
 #[test]
@@ -84,7 +126,9 @@ fn dropping_a_ring_with_a_pending_recv_returns_instead_of_hanging() {
         let (_a, b) = UnixStream::pair().unwrap();
         let mut ring = Ring::new(8);
         // Armed but never completed: nothing is ever sent on `_a`.
-        let _recv = ring.recvmsg(b.as_fd(), Vec::with_capacity(64), 0);
+        // Room for fds, so the cancelled recv's zeroed control buffer is
+        // walked by `Drop for Op` on the way out.
+        let _recv = ring.recvmsg(b.as_fd(), Vec::with_capacity(64), 4);
         drop(ring);
         let _ = done.send(());
     });
@@ -138,6 +182,27 @@ fn turn_signals_before_wait_then_one_io_event_per_completion() {
     assert_eq!(events[0].result, 1);
 }
 
+#[test]
+fn one_turn_delivers_every_completion_it_finds() {
+    let (a, _b) = UnixStream::pair().unwrap();
+    let mut app = App::new();
+    app.add_module(RingModule::default())
+        .init_resource::<Log>()
+        .system(log);
+    // Both armed before the turn: one wait collects both completions and
+    // signals one `IoEvent` each, in completion order.
+    let first = app
+        .resource_mut::<Ring>()
+        .sendmsg(a.as_fd(), b"one".to_vec(), vec![]);
+    let second = app
+        .resource_mut::<Ring>()
+        .sendmsg(a.as_fd(), b"two".to_vec(), vec![]);
+    Ring::turn(&mut app);
+    let seen: Vec<_> = app.resource::<Log>().0.iter().map(|e| e.token).collect();
+    assert!(seen.contains(&first), "the first send: seen {seen:?}");
+    assert!(seen.contains(&second), "the second send: seen {seen:?}");
+}
+
 fn stop_on_first_wait(app: &mut App, _: &BeforeWait) {
     app.signal(Stop);
 }
@@ -151,4 +216,26 @@ fn stop_ends_the_runner_after_the_turn() {
     app.resource_mut::<Ring>()
         .sendmsg(a.as_fd(), b"x".to_vec(), vec![]);
     app.run();
+}
+
+fn stop_on_tick(app: &mut App, _: &Tick) {
+    app.signal(Stop);
+}
+
+#[test]
+fn stop_raised_by_a_tick_ends_the_runner_without_waiting() {
+    // No op is armed, so the turn after the tick would block forever;
+    // the runner has to notice the stop before it gets there. The app
+    // holds a `Ring` and is not `Send`, so it is built on the watched
+    // thread and only the "it returned" signal crosses back.
+    let (done, waited) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut app = App::new();
+        app.add_module(RingModule::default()).system(stop_on_tick);
+        app.run();
+        let _ = done.send(());
+    });
+    waited
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a Stop raised by a tick left the runner blocked in the turn");
 }

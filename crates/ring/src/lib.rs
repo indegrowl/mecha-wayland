@@ -63,7 +63,9 @@ pub mod prelude {
 pub struct Token(u64);
 
 impl Token {
-    /// A token by number, for a test that wants one the ring never issued.
+    /// Tests only: a token by number, for a test that wants one the ring
+    /// never issued. Never construct one to pass to [`Ring::finish`] in
+    /// real code; the ring is the only thing that names its ops.
     pub fn from_raw(raw: u64) -> Self {
         Token(raw)
     }
@@ -156,12 +158,20 @@ impl Ring {
         Some(self.ops.remove(&token.0).unwrap().complete())
     }
 
+    /// Whether a [`Stop`] signal has been seen; the runner ends the loop
+    /// at the next check.
     pub fn is_stopped(&self) -> bool {
         self.stopped
     }
 
     /// Submit and block for at least one completion; return every
     /// completion in completion order. `EINTR` is retried.
+    ///
+    /// # Panics
+    ///
+    /// If the kernel refuses `submit_and_wait` with anything other than
+    /// `EINTR`: the ring is then in a state no caller can recover from,
+    /// and a wait that returned no completion would spin the runner.
     pub fn wait(&mut self) -> Vec<IoEvent> {
         loop {
             match self.uring.submit_and_wait(1) {
@@ -186,30 +196,57 @@ impl Ring {
     }
 }
 
+impl Ring {
+    /// Every token still in flight, in no particular order.
+    fn pending(&self) -> Vec<u64> {
+        self.ops
+            .iter()
+            .filter(|(_, op)| op.result.is_none())
+            .map(|(&token, _)| token)
+            .collect()
+    }
+
+    /// Give up on the drain: hand every op still in flight to the
+    /// allocator's void rather than freeing memory the kernel may still
+    /// write into. Closing the ring fd does not synchronously stop an
+    /// op in flight, so freeing its buffers, iovec and msghdr would be a
+    /// use-after-free. Finished ops stay in `ops` and drop normally, so
+    /// the fds they hold still close. A leak on a path that should never
+    /// run is sound; a write into freed memory is not.
+    fn leak_pending(&mut self) {
+        for token in self.pending() {
+            if let Some(op) = self.ops.remove(&token) {
+                let _ = Box::leak(op);
+            }
+        }
+    }
+}
+
 impl Drop for Ring {
     /// Cancels every op still in flight and drains its completion before
     /// the boxed ops (the receive buffers, iovecs and msghdrs the kernel
-    /// may still be writing into) are freed. Never panics: `submit_and_wait`
-    /// failing for any reason other than `EINTR` simply ends the drain,
-    /// at the cost of the invariant it was enforcing.
+    /// may still be writing into) are freed. Never panics: a submission
+    /// or a `submit_and_wait` failing for any reason other than `EINTR`
+    /// ends the drain, and every op still in flight is leaked rather
+    /// than freed under the kernel.
     fn drop(&mut self) {
         if self.ops.is_empty() {
             return;
         }
-        let pending: Vec<u64> = self
-            .ops
-            .iter()
-            .filter(|(_, op)| op.result.is_none())
-            .map(|(&token, _)| token)
-            .collect();
-        for token in pending {
-            op::push(&mut self.uring, op::cancel_entry(token));
+        for token in self.pending() {
+            if op::try_push(&mut self.uring, op::cancel_entry(token)).is_err() {
+                self.leak_pending();
+                return;
+            }
         }
         while self.ops.values().any(|op| op.result.is_none()) {
             match self.uring.submit_and_wait(1) {
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => return,
+                Err(_) => {
+                    self.leak_pending();
+                    return;
+                }
             }
             for cqe in self.uring.completion() {
                 let token = cqe.user_data();
@@ -243,10 +280,16 @@ fn on_stop(app: &mut App, _: &Stop) {
 }
 
 /// Tick, turn, and stop when told. The runner every presentation module
-/// relies on: a tick per wake, nothing between wakes.
+/// relies on: a tick per wake, nothing between wakes. Stops after a turn
+/// or after a tick that raised [`Stop`] — a tick-time stop must not fall
+/// into the turn's block, which waits for a completion that an app on
+/// its way out may never get.
 fn run(mut app: App) {
     loop {
         app.tick();
+        if app.resource::<Ring>().is_stopped() {
+            return;
+        }
         Ring::turn(&mut app);
         if app.resource::<Ring>().is_stopped() {
             return;
