@@ -10,8 +10,10 @@ app.workspace = true
 geometry.workspace = true
 layout.workspace = true
 paint.workspace = true
+presentation.workspace = true
 render.workspace = true
 ring.workspace = true
+wayland.workspace = true
 window.workspace = true
 
 [workspace]
@@ -23,6 +25,7 @@ app = { path = "crates/app" }
 geometry = { path = "crates/geometry" }
 layout = { path = "crates/layout" }
 paint = { path = "crates/paint" }
+presentation = { path = "crates/presentation" }
 render = { path = "crates/render" }
 ring = { path = "crates/ring" }
 wayland = { path = "crates/wayland" }

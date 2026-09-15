@@ -71,8 +71,10 @@ dependencies = [
  "geometry",
  "layout",
  "paint",
+ "presentation",
  "render",
  "ring",
+ "wayland",
  "window",
 ]
 

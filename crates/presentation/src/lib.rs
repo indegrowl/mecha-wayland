@@ -1,7 +1,58 @@
 #![forbid(unsafe_code)]
-//! The window system integration: a surface and a shell role per
-//! `Window`, configure to `Resized`, the frame callback to `Frame`, and
-//! in v0 the drawer too. Crate docs are completed in Task 10.
+//! The window system integration: what puts a `Window` on the compositor.
+//!
+//! # Model
+//!
+//! - Every window gets a `wl_surface` and a shell role at its `Spawned`:
+//!   an xdg toplevel by default, or a layer surface when the spawn bundle
+//!   carries [`Role::Layer`]. The role is read once.
+//! - The shell's configure is acked and settled: the shell's size where
+//!   it gave one, else the window's `Layout`, else [`DEFAULT_SIZE`]; the
+//!   window hears `Resized`. `preferred_buffer_scale` becomes
+//!   `ScaleFactorChanged`; `close` and `closed` become `CloseRequested`,
+//!   which this module only reports.
+//! - The frame loop: `FrameRequested` marks the window wanting; when it
+//!   is configured, no callback is outstanding and a buffer is free, this
+//!   module signals `Frame`. Its own `Frame` system runs last of all:
+//!   in v0 it fills a `wl_shm` buffer with the window's clear colour,
+//!   attaches, damages, asks for the callback and commits. The callback's
+//!   `done` and a buffer's `release` each try again. A configure wants a
+//!   frame by itself, since the compositor is asking for a buffer.
+//! - Removal destroys the role objects, the buffers and the surface.
+//!   [`Surfaces`] is the module's own state, readable for tests and for
+//!   a later input module.
+//!
+//! Installs last of everything, after `WindowModule` and `WaylandModule`,
+//! which must have bound `WlCompositor`, `WlShm` and `XdgWmBase`. The
+//! layer shell is bound here if the compositor offers it.
+//!
+//! # Quick start
+//!
+//! ```
+//! use app::prelude::*;
+//! use layout::prelude::*;
+//! use presentation::prelude::*;
+//! use wayland::fake::Fake;
+//! use wayland::prelude::*;
+//! use window::prelude::*;
+//!
+//! let globals = [("wl_compositor", 6), ("wl_shm", 2), ("xdg_wm_base", 7)];
+//! let mut f = Fake::new(&globals, |m| m.bind::<WlCompositor>().bind::<WlShm>().bind::<XdgWmBase>());
+//! f.app
+//!     .add_module(LayoutModule)
+//!     .add_module(WindowModule)
+//!     .add_module(PresentationModule { app_id: "example".into() });
+//! let root = f.app.root();
+//! let win = f.app.spawn(root, window().title("hi")).id();
+//! f.app.tick();
+//! f.turn();
+//! // The compositor configures the toplevel (id 9) and its xdg surface (id 8).
+//! f.send(9, 0, |w| { w.int(320); w.int(200); w.array(&[]); });
+//! f.send(8, 0, |w| w.uint(1));
+//! f.turn();
+//! assert!(f.app.resource::<Surfaces>().is_configured(win));
+//! assert_eq!(f.app.component::<LayoutStyle>(win).unwrap().width, px(320.0));
+//! ```
 
 use std::collections::HashMap;
 
