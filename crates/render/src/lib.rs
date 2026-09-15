@@ -6,7 +6,7 @@ use app::prelude::*;
 use geometry::{Color, Corners, Insets, Rect, Size};
 use layout::Layout;
 use paint::{AtlasId, AtlasTile, Paint};
-use window::{Frame, Window};
+use window::{Frame, InWindow, RequestFrame, Window};
 
 mod rect;
 mod scene;
@@ -193,7 +193,6 @@ impl Scenes {
             .map(|(_, s)| s.queue(age))
     }
 
-    #[allow(dead_code)] // until Task 5
     pub(crate) fn has(&self, window: NodeId) -> bool {
         self.scenes.iter().any(|(w, _)| *w == window)
     }
@@ -209,7 +208,6 @@ impl Scenes {
         &mut self.scenes[i].1
     }
 
-    #[allow(dead_code)] // until Task 5
     pub(crate) fn drop_scene(&mut self, window: NodeId) {
         self.scenes.retain(|(w, _)| *w != window);
     }
@@ -240,14 +238,66 @@ impl Module for RenderModule {
     fn install(self, app: &mut App) {
         app.register_component::<Drawn>();
         app.insert_resource(Scenes::new(self.buffers));
-        app.system(on_frame);
-        // The change systems are attached by Task 5.
+        app.system(on_layout_changed)
+            .system(on_paint_changed)
+            .system(on_removed)
+            .system(on_frame);
     }
 }
 
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
+
+/// A `Layout` change: note the node and ask for its window.
+fn on_layout_changed(app: &mut App, e: &Emitted<OnChanged<Layout>>) {
+    note(app, &e.targets);
+}
+
+/// A `Paint` change: note the node and ask for its window.
+fn on_paint_changed(app: &mut App, e: &Emitted<OnChanged<Paint>>) {
+    note(app, &e.targets);
+}
+
+/// Mark each target dirty and raise one `RequestFrame` per distinct
+/// window. A target outside every window is skipped. The `Drawn` write
+/// flags the record; its drain emits an `OnChanged<Drawn>` nobody
+/// handles, which costs the drain one push per marked node.
+fn note(app: &mut App, targets: &[NodeId]) {
+    let mut windows: Vec<NodeId> = Vec::new();
+    for &id in targets {
+        let Some(InWindow(Some(w))) = app.component::<InWindow>(id).copied() else {
+            continue;
+        };
+        if let Some(mut d) = app.component_mut::<Drawn>(id)
+            && !d.dirty
+        {
+            d.dirty = true;
+        }
+        if !windows.contains(&w) {
+            windows.push(w);
+        }
+    }
+    for w in windows {
+        app.signal(RequestFrame(w));
+    }
+}
+
+/// A removed window loses its scene; a removed subtree under a window
+/// left pixels behind, so its window gets a frame even when no sibling
+/// moved. A stale parent is skipped: its own `Removed` follows.
+fn on_removed(app: &mut App, r: &Removed) {
+    if r.parent == app.root() {
+        if app.resource::<Scenes>().has(r.id) {
+            app.resource_mut::<Scenes>().drop_scene(r.id);
+            app.take_resource_changed::<Scenes>();
+        }
+        return;
+    }
+    if let Some(InWindow(Some(w))) = app.component::<InWindow>(r.parent).copied() {
+        app.signal(RequestFrame(w));
+    }
+}
 
 /// Rebuild the window's scene from the live `Layout` and `Paint`. A stale
 /// id or a non-window is ignored. Nothing here raises `RequestFrame`.

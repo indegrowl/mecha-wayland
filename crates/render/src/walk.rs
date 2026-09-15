@@ -91,9 +91,9 @@ pub(crate) fn hand_down(
 
 /// Preorder over `window`'s subtree. Every visited node takes a z; a
 /// visible paint in a non-empty box emits its commands into `scene`; a
-/// dirty node adds its old and new bounds to `scene.damage`; every node
-/// that drew is recorded in `scene.drawing`. Returns how many nodes were
-/// visited.
+/// dirty node adds its old and its new bounds to `scene.damage`, one rect
+/// when they coincide; every node that drew is recorded in
+/// `scene.drawing`. Returns how many nodes were visited.
 pub(crate) fn walk(
     tree: Tree<'_>,
     layouts: &Comps<'_, Layout>,
@@ -144,7 +144,11 @@ pub(crate) fn walk(
                 if let Some(old) = d.rect {
                     scene.damage.push(old);
                 }
-                if let Some(new) = bounds {
+                // A node that was marked but did not move damages one rect,
+                // not the same one twice.
+                if let Some(new) = bounds
+                    && d.rect != Some(new)
+                {
                     scene.damage.push(new);
                 }
             }

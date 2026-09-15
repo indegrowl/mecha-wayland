@@ -101,18 +101,6 @@ fn frame(app: &mut App, w: NodeId) {
     app.flush();
 }
 
-/// A tick, then a frame for each of `windows`. Nothing yet turns a layout
-/// or a paint change into a `RequestFrame` — the change systems are Task
-/// 5's — so a test that only spawns asks for its windows' frames itself.
-/// A window that requests a frame of its own accord is answered by
-/// `answer` instead.
-fn draw(app: &mut App, windows: &[NodeId]) {
-    app.tick();
-    for &w in windows {
-        frame(app, w);
-    }
-}
-
 /// A copy of the queue, so the app is free again.
 fn queue(app: &mut App, w: NodeId, age: usize) -> Queue {
     app.resource_mut::<Scenes>()
@@ -136,7 +124,12 @@ fn a_rounded_quad_under_the_black_window_is_one_opaque_command() {
         Leaf,
         (boxed(50.0, 20.0), Paint::Quad(Quad::new(RED).radius(4.0))),
     );
-    draw(&mut app, &[win.id()]);
+    app.tick();
+    assert_eq!(
+        take_requested(),
+        vec![win.id()],
+        "the spawn's changes asked for a frame"
+    );
 
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(q.size, Size::new(200.0, 100.0));
@@ -182,7 +175,7 @@ fn z_follows_preorder_and_each_pass_is_sorted_its_way() {
     );
     let c = app.spawn_with(win, Leaf, (boxed(60.0, 30.0), Paint::Quad(Quad::new(BLUE))));
     app.spawn_with(c, Leaf, (boxed(10.0, 10.0), Paint::Quad(Quad::new(GREEN))));
-    draw(&mut app, &[win.id()]);
+    app.tick();
 
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(q.depth, 10.0, "five nodes");
@@ -221,7 +214,7 @@ fn a_quad_with_edges_and_nothing_behind_it_splits_into_edge_and_interior() {
         Leaf,
         (boxed(100.0, 50.0), Paint::Quad(bordered.opaque(false))),
     );
-    draw(&mut app, &[win.id()]);
+    app.tick();
 
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(
@@ -281,7 +274,7 @@ fn a_border_alone_blends_and_an_invisible_quad_only_takes_a_z() {
         Leaf,
         (boxed(100.0, 30.0), Paint::Quad(Quad::new(BLUE))),
     );
-    draw(&mut app, &[win.id()]);
+    app.tick();
 
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(zs(&q.translucent.commands), vec![2.0], "the ring");
@@ -312,7 +305,7 @@ fn inside_a_solid_a_quad_is_one_opaque_command_whatever_its_edges_or_alpha() {
         Leaf,
         (boxed(100.0, 50.0), Paint::Quad(Quad::new(HALF_BLUE))),
     );
-    draw(&mut app, &[win.id()]);
+    app.tick();
 
     let q = queue(&mut app, win.id(), 1);
     assert!(q.translucent.commands.is_empty());
@@ -362,7 +355,7 @@ fn sprites_inside_a_solid_go_opaque_with_that_background() {
             glyph(12.0, 3.0, Color::WHITE),
         ],
     );
-    draw(&mut app, &[win.id()]);
+    app.tick();
 
     let q = queue(&mut app, win.id(), 1);
     assert!(q.translucent.commands.is_empty());
@@ -429,7 +422,7 @@ fn sprites_blend_with_no_solid_and_composite_through_a_translucent_quad() {
             Paint::Monochrome(vec![glyph(2.0, 3.0, Color::WHITE)]),
         ),
     );
-    draw(&mut app, &[bare.id(), black.id(), layered.id()]);
+    app.tick();
 
     let q = queue(&mut app, bare.id(), 1);
     assert_eq!(
@@ -483,7 +476,7 @@ fn a_sprite_over_a_rounded_corner_or_opted_out_blends() {
         Quad::new(RED),
         vec![glyph(2.0, 3.0, Color::WHITE).opaque(false)],
     );
-    draw(&mut app, &[win.id()]);
+    app.tick();
 
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(zs(&q.translucent.commands), vec![4.0, 8.0]);
@@ -575,7 +568,7 @@ fn an_image_blends_with_no_solid_and_goes_opaque_inside_one() {
             Paint::Polychrome(an_image().opaque(false)),
         ),
     );
-    draw(&mut app, &[bare.id(), black.id()]);
+    app.tick();
 
     let q = queue(&mut app, bare.id(), 1);
     assert_eq!(zs(&q.translucent.commands), vec![2.0]);
@@ -608,5 +601,232 @@ fn an_image_blends_with_no_solid_and_goes_opaque_inside_one() {
         zs(&q.translucent.commands),
         vec![6.0],
         "the one that opted out"
+    );
+}
+
+// ── 6, 7: damage ────────────────────────────────────────────────────────
+
+/// A black window with two 50 by 20 quads stacked at the top, drawn once.
+/// Returns the window and the two quads.
+fn two_quads(app: &mut App) -> (Handle<Window>, Handle<Leaf>, Handle<Leaf>) {
+    let win = app.spawn(app.root(), a_window());
+    let a = app.spawn_with(win, Leaf, (boxed(50.0, 20.0), Paint::Quad(Quad::new(RED))));
+    let b = app.spawn_with(
+        win,
+        Leaf,
+        (boxed(50.0, 20.0), Paint::Quad(Quad::new(GREEN))),
+    );
+    app.tick();
+    take_requested();
+    (win, a, b)
+}
+
+const A_RECT: Rect = Rect::new(0.0, 0.0, 50.0, 20.0);
+const B_RECT: Rect = Rect::new(0.0, 20.0, 50.0, 20.0);
+
+#[test]
+fn a_paint_change_damages_that_node_and_queues_only_what_touches_it() {
+    let mut app = app();
+    let (win, a, _) = two_quads(&mut app);
+
+    *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.tick();
+    assert_eq!(take_requested(), vec![win.id()]);
+
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(q.scissor, vec![A_RECT]);
+    assert_eq!(q.opaque.scissor, vec![A_RECT]);
+    assert_eq!(q.opaque.commands.len(), 1, "B touches the damage nowhere");
+    assert_eq!(q.opaque.commands[0].color, BLUE);
+    assert!(q.translucent.scissor.is_empty());
+}
+
+#[test]
+fn a_move_damages_old_and_new_for_everything_that_moved() {
+    let mut app = app();
+    let (win, a, _) = two_quads(&mut app);
+
+    *app.component_mut::<LayoutStyle>(a).unwrap() =
+        boxed(50.0, 20.0).margin(Insets::new(px(10.0), px(0.0), px(0.0), px(0.0)));
+    app.tick();
+    assert_eq!(take_requested(), vec![win.id()]);
+
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(
+        q.scissor,
+        vec![
+            A_RECT,
+            Rect::new(0.0, 10.0, 50.0, 20.0),
+            B_RECT,
+            Rect::new(0.0, 30.0, 50.0, 20.0),
+        ],
+        "A old, A new, B old, B new"
+    );
+}
+
+#[test]
+fn a_removal_damages_what_it_drew_and_asks_for_a_frame() {
+    let mut app = app();
+    let (win, _, b) = two_quads(&mut app);
+
+    assert!(app.remove(b));
+    app.tick();
+    assert_eq!(
+        take_requested(),
+        vec![win.id()],
+        "nothing moved, yet a frame is needed"
+    );
+
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(q.scissor, vec![B_RECT], "the hole is cleared");
+    assert!(q.opaque.commands.is_empty(), "A touches it nowhere");
+    assert!(q.opaque.scissor.is_empty());
+}
+
+#[test]
+fn a_resize_damages_the_whole_window() {
+    let mut app = app();
+    let (win, _, _) = two_quads(&mut app);
+
+    app.emit(
+        Resized {
+            size: Size::new(300.0, 100.0),
+        },
+        win,
+    );
+    app.tick();
+    assert_eq!(take_requested(), vec![win.id()]);
+
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(q.size, Size::new(300.0, 100.0));
+    assert_eq!(q.scissor, vec![Rect::new(0.0, 0.0, 300.0, 100.0)]);
+    assert_eq!(q.opaque.commands.len(), 2);
+}
+
+#[test]
+fn a_hidden_node_damages_its_old_rect_and_draws_nothing() {
+    let mut app = app();
+    let (win, a, _) = two_quads(&mut app);
+
+    *app.component_mut::<LayoutStyle>(a).unwrap() = boxed(50.0, 20.0).hidden();
+    app.tick();
+
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(
+        q.scissor,
+        vec![A_RECT, B_RECT, A_RECT],
+        "A's old; B's old and new"
+    );
+    assert_eq!(q.opaque.commands.len(), 1);
+    assert_eq!(q.opaque.commands[0].color, GREEN, "B, now at the top");
+}
+
+#[test]
+fn a_clean_frame_has_nothing_to_do_and_a_clean_tick_asks_for_nothing() {
+    let mut app = app();
+    let (win, _, _) = two_quads(&mut app);
+
+    frame(&mut app, win.id());
+    let q = queue(&mut app, win.id(), 1);
+    assert!(q.scissor.is_empty());
+    assert!(q.opaque.commands.is_empty() && q.opaque.scissor.is_empty());
+    assert!(q.translucent.commands.is_empty() && q.translucent.scissor.is_empty());
+    assert_eq!(q.depth, 6.0, "the scene is still there");
+
+    app.tick();
+    assert!(take_requested().is_empty());
+}
+
+#[test]
+fn ages_union_the_frames_held_and_anything_else_is_the_window() {
+    let mut app = app_with(2);
+    let (win, a, b) = two_quads(&mut app);
+
+    *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.tick();
+    *app.component_mut::<Paint>(b).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.tick();
+
+    assert_eq!(queue(&mut app, win.id(), 1).scissor, vec![B_RECT]);
+    assert_eq!(
+        queue(&mut app, win.id(), 2).scissor,
+        vec![B_RECT, A_RECT],
+        "newest first"
+    );
+    assert_eq!(
+        queue(&mut app, win.id(), 3).scissor,
+        vec![window_rect()],
+        "older than held"
+    );
+    assert_eq!(
+        queue(&mut app, win.id(), 0).scissor,
+        vec![window_rect()],
+        "unknown"
+    );
+    assert_eq!(
+        queue(&mut app, win.id(), 2).opaque.commands.len(),
+        2,
+        "both touch the union"
+    );
+}
+
+// ── 8, 9: requests and windows ──────────────────────────────────────────
+
+#[test]
+fn changes_request_one_frame_per_window_and_none_outside_any() {
+    let mut app = app();
+    let w1 = app.spawn(app.root(), a_window());
+    let c1 = app.spawn_with(w1, Leaf, (boxed(10.0, 10.0), Paint::Quad(Quad::new(RED))));
+    let w2 = app.spawn(app.root(), a_window());
+    let c2 = app.spawn_with(w2, Leaf, (boxed(10.0, 10.0), Paint::Quad(Quad::new(RED))));
+    let stray = app.spawn_with(
+        app.root(),
+        Leaf,
+        (boxed(10.0, 10.0), Paint::Quad(Quad::new(RED))),
+    );
+    app.tick();
+    assert_eq!(take_requested(), vec![w1.id(), w2.id()]);
+
+    *app.component_mut::<Paint>(c1).unwrap() = Paint::Quad(Quad::new(GREEN));
+    *app.component_mut::<Paint>(c2).unwrap() = Paint::Quad(Quad::new(GREEN));
+    *app.component_mut::<Paint>(c1).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.tick();
+    assert_eq!(
+        take_requested(),
+        vec![w1.id(), w2.id()],
+        "once each, in first-write order"
+    );
+
+    *app.component_mut::<Paint>(stray).unwrap() = Paint::Quad(Quad::new(GREEN));
+    app.tick();
+    assert!(take_requested().is_empty(), "outside every window");
+}
+
+#[test]
+fn a_removed_window_loses_its_scene_and_odd_frames_are_ignored() {
+    let mut app = app();
+    let (win, _, _) = two_quads(&mut app);
+    let other = app.spawn(app.root(), a_window());
+    let leaf = app.spawn(other, Leaf);
+    app.tick();
+    take_requested();
+
+    assert!(app.remove(win));
+    app.flush();
+    assert!(app.resource_mut::<Scenes>().queue(win.id(), 1).is_none());
+    assert!(
+        app.resource_mut::<Scenes>().queue(other.id(), 1).is_some(),
+        "the other keeps its scene"
+    );
+
+    frame(&mut app, win.id());
+    frame(&mut app, leaf.id());
+    assert!(
+        app.resource_mut::<Scenes>().queue(leaf.id(), 1).is_none(),
+        "a leaf is not a window"
+    );
+    assert!(
+        take_requested().is_empty(),
+        "a frame never asks for another"
     );
 }
