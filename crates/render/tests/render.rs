@@ -726,6 +726,41 @@ fn a_removal_damages_what_it_drew_and_asks_for_a_frame() {
 }
 
 #[test]
+fn a_spawn_into_a_drawn_window_damages_only_its_own_rect() {
+    let mut app = app();
+    let (win, _, _) = two_quads(&mut app);
+
+    let c = app.spawn_with(win, Leaf, (boxed(50.0, 20.0), Paint::Quad(Quad::new(BLUE))));
+    app.tick();
+    assert_eq!(
+        take_requested(),
+        vec![win.id()],
+        "the spawn asks for a frame"
+    );
+
+    let c_rect = Rect::new(0.0, 40.0, 50.0, 20.0);
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(
+        q.scissor,
+        vec![c_rect],
+        "no previous rect, and no sibling moved"
+    );
+    assert_eq!(
+        q.opaque.commands.len(),
+        1,
+        "only the new quad touches the damage"
+    );
+    assert_eq!(q.opaque.commands[0].rect, c_rect);
+    assert_eq!(q.opaque.commands[0].color, BLUE);
+    assert_eq!(
+        zs(&q.opaque.commands),
+        vec![6.0],
+        "third child: preorder index 3"
+    );
+    assert!(app.is_live(c));
+}
+
+#[test]
 fn a_resize_damages_the_whole_window() {
     let mut app = app();
     let (win, _, _) = two_quads(&mut app);
