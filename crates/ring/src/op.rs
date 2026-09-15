@@ -128,10 +128,32 @@ impl Op {
             // SAFETY: `msg_control` and `msg_controllen` are what the kernel
             // filled; each fd found was passed to us and is owned once.
             self.fds = unsafe { take_fds(&self.msg) };
+            // The control buffer's fds are spoken for now; zero the length
+            // so `Drop` (which runs right after this method returns) does
+            // not decode the same raw fd numbers a second time.
+            self.msg.msg_controllen = 0;
         }
         Completed {
             buf: mem::take(&mut self.buf),
             fds: mem::take(&mut self.fds),
+        }
+    }
+}
+
+impl Drop for Op {
+    /// A completed receive that was never `finish`ed still has its fds
+    /// installed in our fd table by the kernel; take them and drop them
+    /// here so they are not leaked. `complete` already zeroes
+    /// `msg_controllen` once it has taken the real fds, so this only ever
+    /// finds something to close when `complete` was never called.
+    fn drop(&mut self) {
+        if let Kind::Recv = self.kind {
+            if self.result.is_some() {
+                // SAFETY: `msg_control`/`msg_controllen` are either the
+                // kernel's completed values (not yet consumed) or zeroed
+                // by `complete`, in which case this finds nothing.
+                drop(unsafe { take_fds(&self.msg) });
+            }
         }
     }
 }
@@ -167,4 +189,11 @@ pub(crate) fn push(uring: &mut io_uring::IoUring, entry: squeue::Entry) {
         }
         uring.submit().expect("io_uring submit");
     }
+}
+
+/// The submission entry that asks the kernel to cancel the op submitted
+/// with `target` as its `user_data`. Unlike `entry`, this holds no
+/// pointer into an `Op`, so it needs no unsafe to build.
+pub(crate) fn cancel_entry(target: u64) -> squeue::Entry {
+    opcode::AsyncCancel::new(target).build().user_data(0)
 }

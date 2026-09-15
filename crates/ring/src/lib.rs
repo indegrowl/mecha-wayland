@@ -57,6 +57,10 @@ pub struct Completed {
 
 /// The io_uring and every op in flight. Ops hold their buffers until
 /// [`Ring::finish`]; the submitter keeps the fd open until then.
+///
+/// Dropping the ring cancels every op still in flight and drains its
+/// completions before the ring, and the boxed ops the kernel may still be
+/// writing into, are freed.
 pub struct Ring {
     uring: IoUring,
     ops: HashMap<u64, Box<Op>>,
@@ -139,6 +143,42 @@ impl Ring {
             });
         }
         out
+    }
+}
+
+impl Drop for Ring {
+    /// Cancels every op still in flight and drains its completion before
+    /// the boxed ops (the receive buffers, iovecs and msghdrs the kernel
+    /// may still be writing into) are freed. Never panics: `submit_and_wait`
+    /// failing for any reason other than `EINTR` simply ends the drain,
+    /// at the cost of the invariant it was enforcing.
+    fn drop(&mut self) {
+        if self.ops.is_empty() {
+            return;
+        }
+        let pending: Vec<u64> = self
+            .ops
+            .iter()
+            .filter(|(_, op)| op.result.is_none())
+            .map(|(&token, _)| token)
+            .collect();
+        for token in pending {
+            op::push(&mut self.uring, op::cancel_entry(token));
+        }
+        while self.ops.values().any(|op| op.result.is_none()) {
+            match self.uring.submit_and_wait(1) {
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return,
+            }
+            for cqe in self.uring.completion() {
+                let token = cqe.user_data();
+                let result = cqe.result();
+                if let Some(op) = self.ops.get_mut(&token) {
+                    op.result = Some(result);
+                }
+            }
+        }
     }
 }
 
