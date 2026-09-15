@@ -171,6 +171,7 @@ fn a_removed_node_is_not_reported_and_its_slot_starts_at_none() {
     app.remove(old);
     // The only free slot is `old`'s, so `new` reuses it.
     let new = app.spawn(app.root(), Leaf);
+    assert_eq!(new.id().slot(), old.id().slot(), "the slot is reused");
     assert_eq!(app.component::<Paint>(new), Some(&Paint::None));
     app.tick();
     assert!(take_changed().is_empty());

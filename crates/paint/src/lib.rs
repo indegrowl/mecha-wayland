@@ -357,7 +357,11 @@ mod tests {
             atlas: AtlasId,
             bounds: Rect::new(0.0, 0.0, 16.0, 16.0),
         };
-        assert_eq!(tile, tile);
+        let other = AtlasTile {
+            atlas: AtlasId,
+            bounds: Rect::new(16.0, 0.0, 16.0, 16.0),
+        };
+        assert_ne!(tile, other, "different bounds are different tiles");
         assert_eq!(tile.atlas, AtlasId::default());
     }
 

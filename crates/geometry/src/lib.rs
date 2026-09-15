@@ -210,7 +210,8 @@ impl Color {
     }
 
     /// Source-over compositing: `self` drawn on top of `under`. Straight
-    /// alpha in, straight alpha out; `TRANSPARENT` when both are.
+    /// alpha in, straight alpha out; `TRANSPARENT` when the result's alpha
+    /// is zero.
     pub fn over(self, under: Color) -> Color {
         let a = self.a + under.a * (1.0 - self.a);
         if a <= 0.0 {
