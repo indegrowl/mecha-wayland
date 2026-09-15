@@ -50,7 +50,6 @@ impl Page {
     /// 16 grid at its origin, its size rounded up to 16. Each level reads
     /// the one above it, so the region shrinks by half per level and never
     /// straddles a texel.
-    #[allow(dead_code)] // Task 4 wires this through Atlas::pack
     pub(crate) fn regenerate(&mut self, rect: Rect) {
         let channels = self.class().format().bytes();
         let align = self.class().align();

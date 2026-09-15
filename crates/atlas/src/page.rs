@@ -30,7 +30,6 @@ struct Shelf {
 
 /// One texture of one class.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct Page {
     id: AtlasId,
     class: Class,
@@ -43,12 +42,10 @@ pub struct Page {
     shelves: Vec<Shelf>,
 }
 
-#[allow(dead_code)]
 fn align_up(v: u32, a: u32) -> u32 {
     v.div_ceil(a) * a
 }
 
-#[allow(dead_code)]
 impl Page {
     /// A zero page with every cell dirty and no shelf.
     pub(crate) fn new(id: AtlasId, class: Class) -> Page {

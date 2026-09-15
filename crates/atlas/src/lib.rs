@@ -2,10 +2,14 @@
 //! The atlas: every pixel a sprite can name, and the ids that name them.
 //! Crate docs are completed in a later task.
 
-use geometry::Rect;
+use app::Resource;
+use geometry::{Rect, Size};
 
 pub mod prelude {
-    pub use crate::{AtlasId, AtlasTile, Bitmap, Cell, Class, FontId, Format, Page, SpriteId};
+    pub use crate::{
+        Atlas, AtlasId, AtlasTile, Bitmap, Cell, Class, Error, FontId, Format, Page, Sprite,
+        SpriteId,
+    };
 }
 
 mod mip;
@@ -108,6 +112,172 @@ pub struct Bitmap {
     pub height: u32,
     pub format: Format,
     pub pixels: Vec<u8>,
+}
+
+/// An icon or an image: its tile and the size it was inserted at, its
+/// master. It is drawn at that size or smaller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sprite {
+    pub tile: AtlasTile,
+    pub size: Size,
+}
+
+/// What an `AtlasId` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    /// A page: its class and its index in that class's list.
+    Page(Class, u32),
+    /// An external: its index in the external list. Filled in by a later task.
+    #[allow(dead_code)]
+    External(u32),
+}
+
+/// Every pixel a sprite can name, and the ids that name them. A plain
+/// resource: no system, no event, no signal of its own. Writers call it
+/// directly and get a tile back in the same call; a backend drains it in
+/// a system on the core's `OnChanged<Atlas>`, sent at the `PostTick` of
+/// any tick that took `resource_mut::<Atlas>()`, reading through
+/// `resource::<Atlas>()` so the drain is not itself a write.
+#[derive(Debug)]
+pub struct Atlas {
+    /// Indexed by `Class as usize` for the three page classes.
+    pages: [Vec<Page>; 3],
+    /// Indexed by `AtlasId`.
+    owners: Vec<Owner>,
+    /// Indexed by `SpriteId`.
+    sprites: Vec<Sprite>,
+}
+
+impl Resource for Atlas {}
+
+impl Default for Atlas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Atlas {
+    /// Empty: no page, no font, no sprite.
+    pub fn new() -> Atlas {
+        Atlas {
+            pages: [Vec::new(), Vec::new(), Vec::new()],
+            owners: Vec::new(),
+            sprites: Vec::new(),
+        }
+    }
+
+    /// The next id, owned by `owner`.
+    fn mint(&mut self, owner: Owner) -> AtlasId {
+        let id = AtlasId(self.owners.len() as u32);
+        self.owners.push(owner);
+        id
+    }
+
+    /// Pack `bitmap` into a page of `class`, opening one when no existing
+    /// page takes it, write the pixels, regenerate the mips under it and
+    /// mark its cells. `bitmap.format` must be the class's.
+    fn pack(&mut self, class: Class, bitmap: &Bitmap) -> Result<AtlasTile, Error> {
+        if bitmap.format != class.format() {
+            return Err(Error::Class);
+        }
+        if !Page::fits(class, bitmap.width, bitmap.height) {
+            return Err(Error::TooLarge {
+                width: bitmap.width,
+                height: bitmap.height,
+                max: page::PAGE - 2 * class.align(),
+            });
+        }
+        let list = class as usize;
+        let mut placed = None;
+        for (i, page) in self.pages[list].iter_mut().enumerate() {
+            if let Some(rect) = page.pack(bitmap.width, bitmap.height) {
+                placed = Some((i, rect));
+                break;
+            }
+        }
+        let (i, rect) = match placed {
+            Some(p) => p,
+            None => {
+                let i = self.pages[list].len();
+                let id = self.mint(Owner::Page(class, i as u32));
+                let mut page = Page::new(id, class);
+                let rect = page
+                    .pack(bitmap.width, bitmap.height)
+                    .expect("an empty page takes what fits");
+                self.pages[list].push(page);
+                (i, rect)
+            }
+        };
+        let page = &mut self.pages[list][i];
+        page.write(rect, bitmap);
+        if class.levels() > 1 {
+            page.regenerate(rect);
+        }
+        Ok(AtlasTile {
+            atlas: page.id(),
+            bounds: rect,
+        })
+    }
+
+    /// Insert an icon (`Class::Icon`, an `R8` bitmap) or an image
+    /// (`Class::Image`, `Rgba8`) at its master size. There is no key: the
+    /// caller keeps the id. `Error::Class` for any other class or a format
+    /// the class does not take; `Error::TooLarge` for a bitmap no empty
+    /// page of the class fits, which `Bitmap::fit` cures.
+    pub fn insert(&mut self, class: Class, bitmap: &Bitmap) -> Result<SpriteId, Error> {
+        if !matches!(class, Class::Icon | Class::Image) {
+            return Err(Error::Class);
+        }
+        let tile = self.pack(class, bitmap)?;
+        let id = SpriteId(self.sprites.len() as u32);
+        self.sprites.push(Sprite {
+            tile,
+            size: Size::new(bitmap.width as f32, bitmap.height as f32),
+        });
+        Ok(id)
+    }
+
+    /// The sprite `id` names. Panics on an id this atlas did not mint.
+    pub fn sprite(&self, id: SpriteId) -> Sprite {
+        self.sprites[id.0 as usize]
+    }
+
+    /// What `id` is: how a backend picks a format, a mip filter and an
+    /// import path, and checks a tile reached the right primitive. Panics
+    /// on an id this atlas did not mint.
+    pub fn class(&self, id: AtlasId) -> Class {
+        match self.owners[id.0 as usize] {
+            Owner::Page(class, _) => class,
+            Owner::External(_) => Class::External,
+        }
+    }
+
+    /// Every page, in id order.
+    pub fn pages(&self) -> impl Iterator<Item = &Page> {
+        self.owners.iter().filter_map(|o| match *o {
+            Owner::Page(class, i) => Some(&self.pages[class as usize][i as usize]),
+            Owner::External(_) => None,
+        })
+    }
+
+    /// Take every page's dirty mask and call `f` once per set cell with the
+    /// page: class by class, each class's pages in creation order, cells
+    /// rows then columns. A clean page costs one read. `&self`, so a
+    /// backend calls it through `resource::<Atlas>()` and the drain does
+    /// not re-arm `OnChanged<Atlas>`.
+    pub fn drain_dirty(&self, mut f: impl FnMut(&Page, Cell)) {
+        for list in &self.pages {
+            for page in list.iter() {
+                let mask = page.take_dirty();
+                if mask == [0; 4] {
+                    continue;
+                }
+                for cell in Page::cells(mask) {
+                    f(page, cell);
+                }
+            }
+        }
+    }
 }
 
 /// What can go wrong with input from outside. Ids the atlas minted are
