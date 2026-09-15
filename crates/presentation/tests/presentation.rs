@@ -1,9 +1,5 @@
 // The fixture below (ids, opcodes, event opcodes, `configured`, `attaches`,
-// `log`, the logging systems) serves every task in this slice. Tasks 7 and
-// 8's tests use most of it now; a few items (the destroy opcodes, `CLOSE`,
-// `LAYER_CLOSED`, `PREFERRED_SCALE`, `SET_BUFFER_SCALE`) wait on later
-// tasks' tests, so the module stays unused-allowed until then.
-#![allow(dead_code)]
+// `log`, the logging systems) serves every task in this slice.
 
 use app::prelude::*;
 use geometry::Color;
@@ -59,6 +55,9 @@ mod op {
     pub const LAYER_SET_ZONE: u16 = 2;
     pub const LAYER_SET_KEYBOARD: u16 = 4;
     pub const LAYER_ACK: u16 = 6;
+    /// No test removes a layer window (only a toplevel's removal is
+    /// covered), so this opcode names a request no test sends.
+    #[allow(dead_code)]
     pub const LAYER_DESTROY: u16 = 7;
 }
 mod ev {
@@ -471,5 +470,126 @@ fn two_configures_in_one_turn_draw_one_frame() {
         attaches(&mut f).len(),
         1,
         "the second frame, once the callback fired"
+    );
+}
+
+// ── Task 9 ───────────────────────────────────────────────────────────────
+
+#[test]
+fn a_preferred_scale_rescales_the_buffers_and_redraws() {
+    let mut f = fake();
+    let win = configured(&mut f, 100, 50);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.send(SURFACE, ev::PREFERRED_SCALE, |w| w.int(2));
+    f.turn();
+    assert!(log(&f).contains(&format!("Frame {win:?}")), "{:?}", log(&f));
+    assert!(log(&f).contains(&"Scale 2".to_string()));
+    // `f.requests()` drains the log, so it can be called only once for a
+    // given batch; the destroy shape is recovered from what is left after
+    // the expects below have pulled their own requests out.
+    let pool = f.expect(5, op::CREATE_POOL);
+    let mut r = pool.reader();
+    let new_pool = r.object().unwrap().0;
+    assert_eq!(r.int(), Some(200 * 100 * 4 * 2));
+    let buffer = f.expect(new_pool, op::CREATE_BUFFER);
+    let mut r = buffer.reader();
+    let new_a = r.object().unwrap().0;
+    assert_eq!((r.int(), r.int(), r.int()), (Some(0), Some(200), Some(100)));
+    assert_eq!(
+        f.expect(SURFACE, op::SET_BUFFER_SCALE).reader().int(),
+        Some(2)
+    );
+    assert_eq!(
+        f.expect(SURFACE, op::ATTACH).reader().object(),
+        Some(ObjectId(new_a))
+    );
+    let damage = f.expect(SURFACE, op::DAMAGE_BUFFER);
+    let mut r = damage.reader();
+    assert_eq!(
+        (r.int(), r.int(), r.int(), r.int()),
+        (Some(0), Some(0), Some(200), Some(100))
+    );
+    let remaining = f.requests();
+    let destroyed: Vec<(u32, u16)> = remaining
+        .iter()
+        .map(|r| (r.sender.0, r.opcode))
+        .filter(|(s, _)| [BUF_A, BUF_B, POOL].contains(s))
+        .collect();
+    assert_eq!(
+        destroyed,
+        vec![
+            (BUF_A, op::BUFFER_DESTROY),
+            (BUF_B, op::BUFFER_DESTROY),
+            (POOL, op::POOL_DESTROY)
+        ]
+    );
+    assert!(
+        log(&f).iter().filter(|l| l.starts_with("Resized")).count() == 1,
+        "a scale change is not a resize"
+    );
+
+    f.send(SURFACE, ev::PREFERRED_SCALE, |w| w.int(2));
+    f.turn();
+    assert!(f.requests().is_empty(), "the same scale again does nothing");
+}
+
+#[test]
+fn close_and_closed_are_advice_at_the_window() {
+    let mut f = fake();
+    let win = configured(&mut f, 64, 64);
+    f.send(TOPLEVEL, ev::CLOSE, |_| {});
+    f.turn();
+    assert_eq!(log(&f).last().unwrap(), &format!("Close Some({win:?})"));
+    assert!(f.app.is_live(win), "presentation removes nothing");
+
+    let mut f = fake();
+    let root = f.app.root();
+    let role = Role::Layer(LayerRole {
+        layer: Layer::Bottom,
+        anchor: Anchor::BOTTOM,
+        exclusive_zone: -1,
+        namespace: "wall".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    });
+    let win = f.app.spawn_with(root, window(), (role,)).id();
+    f.app.tick();
+    f.turn();
+    f.send(XDG, ev::LAYER_CLOSED, |_| {});
+    f.turn();
+    assert_eq!(log(&f).last().unwrap(), &format!("Close Some({win:?})"));
+}
+
+#[test]
+fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {
+    let mut f = fake();
+    let win = configured(&mut f, 64, 64);
+    f.requests();
+    assert!(f.app.remove(win));
+    f.app.flush();
+    f.turn();
+    let shape: Vec<(u32, u16)> = f
+        .requests()
+        .iter()
+        .map(|r| (r.sender.0, r.opcode))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (TOPLEVEL, op::TOPLEVEL_DESTROY),
+            (XDG, op::XDG_DESTROY),
+            (BUF_A, op::BUFFER_DESTROY),
+            (BUF_B, op::BUFFER_DESTROY),
+            (POOL, op::POOL_DESTROY),
+            (SURFACE, op::SURFACE_DESTROY),
+        ]
+    );
+    assert_eq!(f.app.resource::<Surfaces>().surface_of(win), None);
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert!(
+        f.requests().is_empty(),
+        "late events for forgotten objects are skipped"
     );
 }

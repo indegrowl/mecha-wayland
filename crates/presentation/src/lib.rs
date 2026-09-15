@@ -50,9 +50,6 @@ pub struct LayerRole {
     pub keyboard_interactivity: KeyboardInteractivity,
 }
 
-// `Shell`'s variants are read starting Task 9 (`on_removed`), to destroy
-// the role objects; until then they are written but not read.
-#[allow(dead_code)]
 enum Shell {
     Toplevel {
         xdg: XdgSurface,
@@ -63,8 +60,6 @@ enum Shell {
 
 struct Entry {
     surface: WlSurface,
-    /// Read starting Task 9, by `on_removed`, to destroy the role.
-    #[allow(dead_code)]
     shell: Shell,
     /// The toplevel's last proposal; zero means ours to choose.
     proposed: (i32, i32),
@@ -491,6 +486,84 @@ fn on_buffer(app: &mut App, e: &WlBufferEvent) {
     kick(app, w);
 }
 
-// `on_surface` and `on_removed` stay stubs until Task 9.
-fn on_surface(_: &mut App, _: &WlSurfaceEvent) {}
-fn on_removed(_: &mut App, _: &Removed) {}
+/// A new preferred scale: report it, and if configured rescale the
+/// buffers and want a frame. The same scale again does nothing.
+fn on_surface(app: &mut App, e: &WlSurfaceEvent) {
+    let WlSurfaceEvent::PreferredBufferScale { surface, factor } = e else {
+        return;
+    };
+    let shm = *app.resource::<WlShm>();
+    let changed = {
+        let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        let s = &mut *surfaces;
+        let Some(w) = s.owner.get(&surface.id()).copied() else {
+            return;
+        };
+        let entry = s.entries.get_mut(&w).expect("owned objects have entries");
+        if entry.scale == *factor {
+            None
+        } else {
+            entry.scale = *factor;
+            if entry.configured {
+                replace_buffers(entry, &mut s.owner, &mut wl, shm, w);
+                entry.wanting = true;
+            }
+            Some(w)
+        }
+    };
+    if let Some(w) = changed {
+        app.emit(
+            ScaleFactorChanged {
+                scale: *factor as f32,
+            },
+            w,
+        );
+        kick(app, w);
+    }
+}
+
+/// Every entry whose window is gone is torn down: the role objects, the
+/// buffers and the pool, then the surface. A late event for any of them
+/// finds no owner and is skipped.
+fn on_removed(app: &mut App, _: &Removed) {
+    let gone: Vec<NodeId> = {
+        let surfaces = app.resource::<Surfaces>();
+        surfaces
+            .entries
+            .keys()
+            .copied()
+            .filter(|&w| !app.is_live(w))
+            .collect()
+    };
+    if gone.is_empty() {
+        return;
+    }
+    let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+    let s = &mut *surfaces;
+    for w in gone {
+        let entry = s.entries.remove(&w).unwrap();
+        match entry.shell {
+            Shell::Toplevel { xdg, toplevel } => {
+                toplevel.destroy(&mut wl);
+                xdg.destroy(&mut wl);
+                s.owner.remove(&toplevel.id());
+                s.owner.remove(&xdg.id());
+            }
+            Shell::Layer(ls) => {
+                ls.destroy(&mut wl);
+                s.owner.remove(&ls.id());
+            }
+        }
+        if let Some(buffers) = entry.buffers {
+            for slot in &buffers.slots {
+                s.owner.remove(&slot.buffer.id());
+            }
+            buffers.destroy(&mut wl);
+        }
+        entry.surface.destroy(&mut wl);
+        s.owner.remove(&entry.surface.id());
+        if let Some(cb) = entry.callback {
+            s.owner.remove(&cb.id());
+        }
+    }
+}
