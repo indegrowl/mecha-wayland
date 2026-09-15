@@ -7,7 +7,10 @@ use app::prelude::*;
 use layout::prelude::*;
 
 pub mod prelude {
-    pub use crate::{InWindow, Window, WindowBuilder, WindowModule, Windows, window};
+    pub use crate::{
+        Frame, FrameRequested, InWindow, RequestFrame, Window, WindowBuilder, WindowModule,
+        Windows, window,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +135,31 @@ impl Windows {
 }
 
 // ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+/// Please draw this window again. Signalled by anyone with a reason, any
+/// number of times; while a cycle is open the extra ones are swallowed,
+/// since the coming `Frame` draws the latest state anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestFrame(pub NodeId);
+impl Signal for RequestFrame {}
+
+/// This window wants to be drawn; tell me when. Signalled by this module
+/// once per cycle, to the WSI, which asks its compositor for a callback
+/// and answers with `Frame` when it fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameRequested(pub NodeId);
+impl Signal for FrameRequested {}
+
+/// Draw this window now. Signalled by the WSI when its frame callback
+/// fires, and by nothing in this module. Whoever draws attaches inside
+/// it; what follows is the WSI's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame(pub NodeId);
+impl Signal for Frame {}
+
+// ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
 
@@ -144,7 +172,9 @@ impl Module for WindowModule {
         app.register_component::<InWindow>()
             .init_resource::<Windows>()
             .system(on_spawned)
-            .system(on_removed);
+            .system(on_removed)
+            .system(on_request_frame)
+            .system(on_frame);
     }
 }
 
@@ -189,4 +219,27 @@ fn on_removed(app: &mut App, _: &Removed) {
         .filter(|&w| app.is_live(w))
         .collect();
     app.resource_mut::<Windows>().ids = live;
+}
+
+/// The first request of a cycle goes to the WSI; the rest wait for its
+/// `Frame`. A stale id or a non-window is skipped.
+fn on_request_frame(app: &mut App, r: &RequestFrame) {
+    let Some(w) = app.widget_mut::<Window>(r.0) else {
+        return;
+    };
+    if w.pending {
+        return;
+    }
+    w.pending = true;
+    app.signal(FrameRequested(r.0));
+}
+
+/// The cycle is closed. A `RequestFrame` queued by any `Frame` system runs
+/// after every `Frame` system, finds `pending` clear, and opens the next
+/// cycle by itself. A `Frame` for a window that was not pending is
+/// accepted, so a WSI that draws on its own initiative is harmless.
+fn on_frame(app: &mut App, f: &Frame) {
+    if let Some(w) = app.widget_mut::<Window>(f.0) {
+        w.pending = false;
+    }
 }

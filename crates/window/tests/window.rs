@@ -55,16 +55,6 @@ impl Widget for Owner {
     }
 }
 
-// Stand-ins for the names later tasks add to the crate. Each is deleted
-// by the task that adds the real one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FrameRequested(NodeId);
-impl Signal for FrameRequested {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Frame(NodeId);
-impl Signal for Frame {}
-
 // Systems cannot capture, so the tests log through thread-locals. Each
 // test runs on its own thread, so logs never mix.
 thread_local! {
@@ -243,7 +233,11 @@ fn windows_lists_live_windows_in_spawn_order_and_signals_only_on_change() {
     assert!(app.remove(leaf));
     app.tick();
     assert_eq!(windows(&app), vec![a.id(), b.id()]);
-    assert_eq!(take_windows_changed(), 0, "a non-window removal writes nothing");
+    assert_eq!(
+        take_windows_changed(),
+        0,
+        "a non-window removal writes nothing"
+    );
 
     assert!(app.remove(a));
     app.tick();
@@ -275,4 +269,121 @@ fn removing_a_subtree_under_a_window_and_removing_two_windows_at_once() {
     assert!(windows(&app).is_empty());
     assert!(app.resource::<Windows>().is_empty());
     assert_eq!(take_windows_changed(), 1, "two removals, one drain");
+}
+
+// ── 4, 5, 6, 9: the loop ────────────────────────────────────────────────
+
+#[test]
+fn requests_coalesce_into_one_frame_requested_and_frame_clears_pending() {
+    let mut app = app_closed();
+    let win = app.spawn(app.root(), a_window());
+    app.tick();
+
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert_eq!(take_requested(), vec![win.id()]);
+    assert_eq!(take_frames(), vec![win.id()]);
+    assert!(!app.widget::<Window>(win).unwrap().is_pending());
+
+    app.signal(RequestFrame(win.id()));
+    app.signal(RequestFrame(win.id()));
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert_eq!(
+        take_requested(),
+        vec![win.id()],
+        "three requests, one cycle"
+    );
+    assert_eq!(take_frames(), vec![win.id()]);
+}
+
+#[test]
+fn a_request_while_pending_is_swallowed_until_the_frame_comes_back() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    app.tick();
+
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert_eq!(take_requested(), vec![win.id()]);
+    assert!(app.widget::<Window>(win).unwrap().is_pending());
+
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert!(take_requested().is_empty(), "pending: nothing sent");
+
+    app.signal(Frame(win.id()));
+    app.flush();
+    assert_eq!(take_frames(), vec![win.id()]);
+    assert!(!app.widget::<Window>(win).unwrap().is_pending());
+
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert_eq!(take_requested(), vec![win.id()], "a new cycle");
+}
+
+thread_local! {
+    /// Set by a test that wants `rerequest` to fire once.
+    static REREQUEST_ONCE: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// A stand-in for animation: on `Frame`, ask for another, once.
+fn rerequest(app: &mut App, f: &Frame) {
+    let fire = REREQUEST_ONCE.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    if fire {
+        app.signal(RequestFrame(f.0));
+    }
+}
+
+#[test]
+fn a_request_raised_by_a_frame_system_opens_the_next_cycle_in_the_same_flush() {
+    let mut app = app();
+    app.system(rerequest);
+    let win = app.spawn(app.root(), a_window());
+    app.tick();
+
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert_eq!(take_requested(), vec![win.id()]);
+
+    REREQUEST_ONCE.with(|b| *b.borrow_mut() = true);
+    app.signal(Frame(win.id()));
+    app.flush();
+    assert_eq!(take_frames(), vec![win.id()]);
+    assert_eq!(
+        take_requested(),
+        vec![win.id()],
+        "the Frame cleared pending, then the re-request opened a cycle"
+    );
+    assert!(app.widget::<Window>(win).unwrap().is_pending());
+}
+
+#[test]
+fn stale_and_non_window_ids_are_ignored_and_a_frame_when_not_pending_is_harmless() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let leaf = app.spawn(win, Leaf);
+    let gone = app.spawn(app.root(), a_window());
+    app.tick();
+    assert!(app.remove(gone));
+    app.flush();
+
+    app.signal(RequestFrame(gone.id()));
+    app.signal(RequestFrame(leaf.id()));
+    app.signal(Frame(gone.id()));
+    app.signal(Frame(leaf.id()));
+    app.flush();
+    assert!(take_requested().is_empty());
+    assert_eq!(
+        take_frames(),
+        vec![gone.id(), leaf.id()],
+        "logged, but ignored by window"
+    );
+
+    app.signal(Frame(win.id()));
+    app.flush();
+    assert!(!app.widget::<Window>(win).unwrap().is_pending());
+    app.signal(RequestFrame(win.id()));
+    app.flush();
+    assert_eq!(take_requested(), vec![win.id()], "still works afterwards");
 }
