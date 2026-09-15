@@ -427,6 +427,10 @@ fn on_frame(app: &mut App, f: &Frame) {
     if !entry.configured {
         return;
     }
+    if entry.callback.is_some() {
+        entry.wanting = true;
+        return;
+    }
     let Some(buffers) = entry.buffers.as_mut() else {
         return;
     };

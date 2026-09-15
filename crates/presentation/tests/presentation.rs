@@ -444,3 +444,32 @@ fn with_both_buffers_held_a_release_draws() {
     f.turn();
     assert_eq!(attaches(&mut f), vec![BUF_A]);
 }
+
+#[test]
+fn two_configures_in_one_turn_draw_one_frame() {
+    let mut f = fake();
+    spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(64);
+        w.int(64);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(64);
+        w.int(64);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(2));
+    f.turn();
+    assert_eq!(attaches(&mut f).len(), 1, "one frame for the whole burst");
+
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert_eq!(
+        attaches(&mut f).len(),
+        1,
+        "the second frame, once the callback fired"
+    );
+}
