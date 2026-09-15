@@ -336,9 +336,10 @@ impl Atlas {
 
     /// Take every page's dirty mask and call `f` once per set cell with the
     /// page: class by class, each class's pages in creation order, cells
-    /// rows then columns. A clean page costs one read. `&self`, so a
-    /// backend calls it through `resource::<Atlas>()` and the drain does
-    /// not re-arm `OnChanged<Atlas>`.
+    /// rows then columns. A clean page costs four words: `take_dirty`
+    /// always reads and clears all four `Cell<u64>` words of its mask.
+    /// `&self`, so a backend calls it through `resource::<Atlas>()` and the
+    /// drain does not re-arm `OnChanged<Atlas>`.
     pub fn drain_dirty(&self, mut f: impl FnMut(&Page, Cell)) {
         for list in &self.pages {
             for page in list.iter() {

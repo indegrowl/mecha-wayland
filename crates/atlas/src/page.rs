@@ -333,7 +333,8 @@ mod tests {
         );
         assert!(
             p.pack(2, 2).is_some(),
-            "but a small one fits the last shelf's leftover"
+            "but a small one opens an eleventh shelf at y 1020, which has \
+             exactly 4 rows of room left on the page"
         );
         assert!(Page::fits(Class::Glyph, 1022, 1022));
         assert!(!Page::fits(Class::Glyph, 1023, 1));
