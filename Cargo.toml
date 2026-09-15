@@ -9,6 +9,7 @@ edition = "2024"
 app.workspace = true
 geometry.workspace = true
 layout.workspace = true
+window.workspace = true
 
 [workspace]
 members = ["crates/app", "crates/geometry", "crates/layout", "crates/window"]

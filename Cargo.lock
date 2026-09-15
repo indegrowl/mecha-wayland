@@ -41,6 +41,7 @@ dependencies = [
  "app",
  "geometry",
  "layout",
+ "window",
 ]
 
 [[package]]

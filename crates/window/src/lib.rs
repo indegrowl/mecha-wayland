@@ -1,7 +1,68 @@
 #![forbid(unsafe_code)]
-//! The window module: the `Window` widget, which window a node belongs to,
-//! the list of live windows, and the frame request loop between the app and
-//! whatever presents a window. Crate docs are completed in a later task.
+//! The window module: the [`Window`] widget, which window a node belongs
+//! to, the list of live windows, and the frame request loop between the
+//! app and whatever presents a window.
+//!
+//! # Model
+//!
+//! - A window is a node built from [`window()`], a child of the app root
+//!   and a layout root: its `LayoutStyle` is the box it asks for and its
+//!   `Layout` is laid out from the origin in its own coordinates. The
+//!   default style is a column sized to its content.
+//! - [`InWindow`] is on every node: the window it belongs to, a window's
+//!   being itself, `None` outside every window. Written once, at spawn.
+//! - [`Windows`] is the live list, in spawn order, exact after every
+//!   flush; any tick that changed it fires `OnChanged<Windows>` once.
+//! - The loop: anyone signals [`RequestFrame`] as often as it likes.
+//!   This module forwards the first as one [`FrameRequested`] to the WSI
+//!   (whatever presents the window) and swallows the rest. The WSI signals
+//!   [`Frame`] when its callback fires; the drawer draws inside it, and
+//!   the module clears its pending bit so the next request opens a new
+//!   cycle. A request raised by a `Frame` system runs after it and opens
+//!   the next cycle by itself.
+//! - The WSI reports facts as events at the window node: [`Resized`]
+//!   rewrites the style's size, [`ScaleFactorChanged`] is stored on the
+//!   widget and asks for a frame, [`CloseRequested`] is left to whoever
+//!   spawned the window.
+//!
+//! Nothing here knows a compositor, a role, a paint or a renderer. Who
+//! raises `RequestFrame` is the seam: layout, paint and animation each
+//! have their reasons and none is this module's.
+//!
+//! # Quick start
+//!
+//! ```
+//! use app::prelude::*;
+//! use geometry::Rect;
+//! use layout::prelude::*;
+//! use window::prelude::*;
+//!
+//! /// A WSI stand-in: answers every request at once.
+//! fn answer(app: &mut App, r: &FrameRequested) {
+//!     app.signal(Frame(r.0));
+//! }
+//!
+//! let mut app = App::new();
+//! app.add_module(LayoutModule).add_module(WindowModule).system(answer);
+//!
+//! let win = app.spawn(
+//!     app.root(),
+//!     window()
+//!         .title("hello")
+//!         .layout(LayoutStyle::default().size(px(320.0), px(200.0))),
+//! );
+//! app.tick();
+//! assert_eq!(
+//!     app.component::<Layout>(win).unwrap().rect,
+//!     Rect::new(0.0, 0.0, 320.0, 200.0)
+//! );
+//! assert_eq!(app.resource::<Windows>().len(), 1);
+//!
+//! app.signal(RequestFrame(win.id()));
+//! assert!(!app.widget::<Window>(win).unwrap().is_pending(), "queued, not run");
+//! app.flush();
+//! assert!(!app.widget::<Window>(win).unwrap().is_pending(), "requested, drawn, closed");
+//! ```
 
 use app::prelude::*;
 use geometry::Size;
@@ -9,8 +70,8 @@ use layout::prelude::*;
 
 pub mod prelude {
     pub use crate::{
-        CloseRequested, Frame, FrameRequested, InWindow, RequestFrame, Resized,
-        ScaleFactorChanged, Window, WindowBuilder, WindowModule, Windows, window,
+        CloseRequested, Frame, FrameRequested, InWindow, RequestFrame, Resized, ScaleFactorChanged,
+        Window, WindowBuilder, WindowModule, Windows, window,
     };
 }
 
