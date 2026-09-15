@@ -72,7 +72,10 @@ impl Fake {
         fake.flush_outbox();
         fake.wrote = false;
         fake.app.add_module(configure(WaylandModule::over(ours)));
-        fake.read_peer();
+        // `install` only buffers a bound global's request; turning (rather
+        // than a bare `read_peer`) flushes it, so it is already visible to
+        // a test the moment `new` returns.
+        fake.turn();
         fake
     }
 
