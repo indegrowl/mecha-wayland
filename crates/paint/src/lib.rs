@@ -1,6 +1,64 @@
 #![forbid(unsafe_code)]
 //! The paint module: what a node looks like, held as one [`Paint`] per
-//! node. Crate docs are completed in a later task.
+//! node.
+//!
+//! # Model
+//!
+//! - A `Paint` says *how* a node looks and never *where*; the where is the
+//!   node's `Layout`, and whoever draws reads the two together. It is
+//!   resolved, not descriptive: nothing interprets it beyond placing it.
+//! - The set of primitives is closed: a [`Quad`] that fills the node's
+//!   box, a run of [`MonochromeSprite`]s (glyphs, icons) placed inside its
+//!   content box, or one [`PolychromeSprite`] (an image) stretched over
+//!   it. A node draws one kind; a node that wants two visuals is two nodes.
+//! - Widgets write `Paint`: it is their decision how they are painted. A
+//!   text widget resolves its string and font into a sprite run when
+//!   either changes, so paint never sees a string.
+//! - A sprite names its pixels through an [`AtlasTile`]: an [`AtlasId`]
+//!   and bounds in atlas pixels. Paint knows nothing else about atlases;
+//!   the id is a placeholder for the atlas module to shape.
+//! - [`PaintModule`] registers the component and nothing else. A write is
+//!   reported by the core's `OnChanged<Paint>` at the next `PostTick`, an
+//!   equal write through `set_if_neq` is not, and nothing here compares
+//!   paints on `Tick`.
+//!
+//! # Quick start
+//!
+//! ```
+//! use app::prelude::*;
+//! use paint::prelude::*;
+//!
+//! # struct Leaf;
+//! # impl Build for Leaf { type Widget = Leaf; }
+//! # impl Widget for Leaf {
+//! #     type Builder = Leaf;
+//! #     fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self { b }
+//! # }
+//! # use std::cell::RefCell;
+//! # thread_local! { static SEEN: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) }; }
+//! fn on_repaint(_: &mut App, e: &Emitted<OnChanged<Paint>>) {
+//!     SEEN.with(|s| s.borrow_mut().extend(e.targets.iter().copied()));
+//! }
+//!
+//! let mut app = App::new();
+//! app.add_module(PaintModule).system(on_repaint);
+//!
+//! // A panel painted at spawn.
+//! let panel = app.spawn_with(
+//!     app.root(),
+//!     Leaf,
+//!     (Paint::Quad(Quad::new(Color::from_rgb8(30, 30, 40)).radius(6.0)),),
+//! );
+//!
+//! app.tick();
+//! assert_eq!(SEEN.with(|s| s.borrow().clone()), vec![panel.id()]);
+//! assert!(!app.component::<Paint>(panel).unwrap().is_invisible());
+//!
+//! // Repaint between ticks; the next tick reports it.
+//! *app.component_mut::<Paint>(panel).unwrap() = Paint::None;
+//! app.tick();
+//! assert_eq!(SEEN.with(|s| s.borrow().len()), 2);
+//! ```
 
 use app::{App, Component, Module};
 use geometry::{Color, Corners, Insets, Point, Rect, Size};

@@ -9,6 +9,7 @@ edition = "2024"
 app.workspace = true
 geometry.workspace = true
 layout.workspace = true
+paint.workspace = true
 
 [workspace]
 members = ["crates/app", "crates/geometry", "crates/layout", "crates/paint"]
@@ -18,6 +19,7 @@ resolver = "3"
 app = { path = "crates/app" }
 geometry = { path = "crates/geometry" }
 layout = { path = "crates/layout" }
+paint = { path = "crates/paint" }
 smallvec = "1"
 taffy = { version = "0.10.1", default-features = false, features = ["std", "flexbox", "block_layout"] }
 
