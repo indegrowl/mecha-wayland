@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn kern_and_line_are_lookups() {
-        let (mut atlas, inter) = atlas_with_inter();
+        let (atlas, inter) = atlas_with_inter();
         let (_, a) = atlas.lookup(&[inter], 'a').unwrap();
         let (_, b) = atlas.lookup(&[inter], 'b').unwrap();
         let _ = atlas.kern(inter, a, b, 14); // any value; the pair may or may not exist
