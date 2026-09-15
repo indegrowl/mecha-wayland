@@ -5,8 +5,12 @@
 use geometry::Rect;
 
 pub mod prelude {
-    pub use crate::{AtlasId, AtlasTile, Class, FontId, Format, SpriteId};
+    pub use crate::{AtlasId, AtlasTile, Bitmap, Cell, Class, FontId, Format, Page, SpriteId};
 }
+
+mod page;
+
+pub use page::{CELL, CELLS, Cell, PAGE, Page};
 
 /// Which texture a tile is in: a dense index the atlas mints, in creation
 /// order, across every page of every class and every external, so a
@@ -94,6 +98,16 @@ pub struct SpriteId(pub u32);
 /// A font: an index into the atlas's font list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FontId(pub u16);
+
+/// Pixels to insert: `width * height * format.bytes()` bytes, row-major,
+/// tightly packed, straight alpha.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bitmap {
+    pub width: u32,
+    pub height: u32,
+    pub format: Format,
+    pub pixels: Vec<u8>,
+}
 
 /// What can go wrong with input from outside. Ids the atlas minted are
 /// never wrong, so nothing that takes one returns this.
