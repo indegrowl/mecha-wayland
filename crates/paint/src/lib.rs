@@ -2,7 +2,7 @@
 //! The paint module: what a node looks like, held as one [`Paint`] per
 //! node. Crate docs are completed in a later task.
 
-use geometry::{Color, Corners, Insets, Rect};
+use geometry::{Color, Corners, Insets, Point, Rect, Size};
 
 /// Which atlas a tile is in. A placeholder: an empty struct, so that a
 /// sprite can name an atlas today and the atlas spec can give the id its
@@ -96,9 +96,98 @@ impl Quad {
     }
 }
 
+/// A glyph or an icon: one channel of coverage from an atlas, tinted by
+/// `color`, stretched into `size` at `offset` from the top left of the
+/// node's content box (`Layout::content()`). Logical pixels; at a scale
+/// factor other than one the tile is larger than `size` by that factor,
+/// which is the atlas's business when it rasterizes and a renderer's when
+/// it samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonochromeSprite {
+    pub tile: AtlasTile,
+    pub offset: Point,
+    pub size: Size,
+    pub color: Color,
+}
+
+impl MonochromeSprite {
+    /// True when a renderer would leave no pixel behind: a transparent
+    /// tint or an empty box.
+    pub fn is_invisible(&self) -> bool {
+        self.color.is_transparent() || self.size.width <= 0.0 || self.size.height <= 0.0
+    }
+}
+
+/// An image: a full-colour tile stretched over the node's content box,
+/// with rounded corners, an opacity and a grayscale switch. No offset and
+/// no size: an image that wants a place is a node with a `LayoutStyle`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolychromeSprite {
+    pub tile: AtlasTile,
+    pub radii: Corners<f32>,
+    /// `0.0..=1.0`; `1.0` is opaque.
+    pub opacity: f32,
+    pub grayscale: bool,
+}
+
+/// The verbs, by value.
+impl PolychromeSprite {
+    /// That tile, square, opaque, in colour.
+    pub const fn new(tile: AtlasTile) -> Self {
+        Self {
+            tile,
+            radii: Corners::all(0.0),
+            opacity: 1.0,
+            grayscale: false,
+        }
+    }
+
+    /// The same radius at every corner.
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.radii = Corners::all(radius);
+        self
+    }
+
+    pub fn radii(mut self, radii: Corners<f32>) -> Self {
+        self.radii = radii;
+        self
+    }
+
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    pub fn grayscale(mut self, grayscale: bool) -> Self {
+        self.grayscale = grayscale;
+        self
+    }
+
+    /// True when a renderer would leave no pixel behind: fully transparent.
+    pub fn is_invisible(&self) -> bool {
+        self.opacity <= 0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tile() -> AtlasTile {
+        AtlasTile {
+            atlas: AtlasId,
+            bounds: Rect::new(0.0, 0.0, 8.0, 8.0),
+        }
+    }
+
+    fn glyph(color: Color) -> MonochromeSprite {
+        MonochromeSprite {
+            tile: tile(),
+            offset: Point::new(1.0, 2.0),
+            size: Size::new(8.0, 8.0),
+            color,
+        }
+    }
 
     #[test]
     fn quad_verbs_compose_by_value() {
@@ -159,5 +248,38 @@ mod tests {
         };
         assert_eq!(tile, tile);
         assert_eq!(tile.atlas, AtlasId::default());
+    }
+
+    #[test]
+    fn monochrome_sprite_visibility() {
+        assert!(!glyph(Color::BLACK).is_invisible());
+        assert!(
+            glyph(Color::TRANSPARENT).is_invisible(),
+            "a transparent tint"
+        );
+        let mut flat = glyph(Color::BLACK);
+        flat.size = Size::new(8.0, 0.0);
+        assert!(flat.is_invisible(), "a zero height");
+        flat.size = Size::new(0.0, 8.0);
+        assert!(flat.is_invisible(), "a zero width");
+    }
+
+    #[test]
+    fn polychrome_sprite_verbs_and_visibility() {
+        let image = PolychromeSprite::new(tile());
+        assert_eq!(image.radii, Corners::all(0.0));
+        assert_eq!(image.opacity, 1.0);
+        assert!(!image.grayscale);
+        assert!(!image.is_invisible());
+
+        let image = image.radius(3.0).opacity(0.5).grayscale(true);
+        assert_eq!(image.radii, Corners::all(3.0));
+        assert_eq!(image.opacity, 0.5);
+        assert!(image.grayscale);
+        assert!(!image.is_invisible());
+
+        let image = image.radii(Corners::new(1.0, 2.0, 3.0, 4.0)).opacity(0.0);
+        assert_eq!(image.radii, Corners::new(1.0, 2.0, 3.0, 4.0));
+        assert!(image.is_invisible(), "zero opacity");
     }
 }
