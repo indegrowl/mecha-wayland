@@ -1,6 +1,90 @@
 #![forbid(unsafe_code)]
-//! The render module: `Layout` and `Paint` joined into a command queue a
-//! GPU backend executes. Crate docs are written in Task 6.
+//! The render module: a window's `Layout` and `Paint` joined into a
+//! command queue a GPU backend executes without a decision.
+//!
+//! # Model
+//!
+//! - On `Frame(w)` the window's subtree is walked in preorder and every
+//!   visible paint becomes one or more [`Command`]s in device pixels, the
+//!   window's scale applied. Each node takes a z of twice its preorder
+//!   index; higher is nearer.
+//! - The walk carries a *solid* down: the colour and rect known to be
+//!   exactly that colour behind a node, starting from the window's clear
+//!   colour. A primitive inside a solid goes to the opaque pass whole,
+//!   its `background` set, so the shader composites its edges, border or
+//!   tile onto it and writes depth. A primitive with nothing known behind
+//!   it blends in the translucent pass; an opaque quad with edges also
+//!   writes its flat interior as an opaque fill at `z + 1`. Each
+//!   primitive's `is_opaque` in `paint` opts out of the opaque pass.
+//! - `Layout` and `Paint` changes, and removals, mark the nodes and raise
+//!   `RequestFrame` for their window; nothing else does, and nothing runs
+//!   on `Tick`. The walk damages a marked node's old and new bounds, a
+//!   removed node's last bounds, and the whole window on the first frame
+//!   or a new size or scale.
+//! - [`Scenes`] keeps the last few frames' damage per window, as many as
+//!   [`RenderModule::buffers`] says. A backend asks [`Scenes::queue`] for
+//!   the buffer it will draw into by its age and gets a [`Queue`]: the
+//!   scissor to clear, and per [`Pass`] the rects it has something to
+//!   draw in and the commands that touch them, already sorted.
+//! - [`Command`] is `repr(C)` and uploaded as is. Tiles pass through from
+//!   `paint`; uploading atlas pixels is the backend's business against the
+//!   atlas, not this module's.
+//!
+//! Installs after `LayoutModule`, `PaintModule` and `WindowModule`; a
+//! backend installs after this.
+//!
+//! # Quick start
+//!
+//! ```
+//! use app::prelude::*;
+//! use geometry::{Color, Rect};
+//! use layout::prelude::*;
+//! use paint::prelude::*;
+//! use render::prelude::*;
+//! use window::prelude::*;
+//!
+//! # struct Leaf;
+//! # impl Build for Leaf { type Widget = Leaf; }
+//! # impl Widget for Leaf {
+//! #     type Builder = Leaf;
+//! #     fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self { b }
+//! # }
+//! /// The WSI stand-in: every request is answered at once.
+//! fn answer(app: &mut App, r: &FrameRequested) {
+//!     app.signal(Frame(r.0));
+//! }
+//!
+//! let mut app = App::new();
+//! app.add_module(LayoutModule)
+//!     .add_module(PaintModule)
+//!     .add_module(WindowModule)
+//!     .add_module(RenderModule::default())
+//!     .system(answer);
+//!
+//! let win = app.spawn(
+//!     app.root(),
+//!     window().layout(LayoutStyle::default().column().size(px(200.0), px(100.0))),
+//! );
+//! app.spawn_with(
+//!     win,
+//!     Leaf,
+//!     (
+//!         LayoutStyle::default().size(px(50.0), px(20.0)),
+//!         Paint::Quad(Quad::new(Color::rgb(1.0, 0.0, 0.0)).radius(4.0)),
+//!     ),
+//! );
+//! // Layout runs, the writes are noted, a frame is requested and answered.
+//! app.tick();
+//!
+//! let mut scenes = app.resource_mut::<Scenes>();
+//! let queue = scenes.queue(win.id(), 1).unwrap();
+//! assert_eq!(queue.scissor, vec![Rect::new(0.0, 0.0, 200.0, 100.0)]);
+//! assert!(queue.translucent.commands.is_empty(), "black behind it: nothing blends");
+//! let quad = queue.opaque.commands[0];
+//! assert_eq!(quad.rect, Rect::new(0.0, 0.0, 50.0, 20.0));
+//! assert_eq!(quad.background, Color::BLACK);
+//! assert_eq!(quad.kind(), Command::QUAD);
+//! ```
 
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Rect, Size};
