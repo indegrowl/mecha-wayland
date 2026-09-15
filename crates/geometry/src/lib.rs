@@ -226,8 +226,55 @@ impl Color {
     }
 }
 
+/// One value per corner, clockwise from the top left: CSS's
+/// `border-radius` order.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Corners<T> {
+    pub top_left: T,
+    pub top_right: T,
+    pub bottom_right: T,
+    pub bottom_left: T,
+}
+
+impl<T> Corners<T> {
+    pub const fn new(top_left: T, top_right: T, bottom_right: T, bottom_left: T) -> Self {
+        Self {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        }
+    }
+
+    pub fn map<U>(self, f: impl Fn(T) -> U) -> Corners<U> {
+        Corners {
+            top_left: f(self.top_left),
+            top_right: f(self.top_right),
+            bottom_right: f(self.bottom_right),
+            bottom_left: f(self.bottom_left),
+        }
+    }
+}
+
+impl<T: Copy> Corners<T> {
+    /// The same value at every corner.
+    pub const fn all(v: T) -> Self {
+        Self::new(v, v, v, v)
+    }
+}
+
+impl Corners<f32> {
+    /// True when no corner is rounded.
+    pub fn is_zero(self) -> bool {
+        self.top_left <= 0.0
+            && self.top_right <= 0.0
+            && self.bottom_right <= 0.0
+            && self.bottom_left <= 0.0
+    }
+}
+
 pub mod prelude {
-    pub use crate::{Color, Insets, Point, Rect, Size};
+    pub use crate::{Color, Corners, Insets, Point, Rect, Size};
 }
 
 #[cfg(test)]
@@ -319,5 +366,24 @@ mod tests {
         let red = Color::rgba(1.0, 0.0, 0.0, 0.5);
         let blue = Color::rgb(0.0, 0.0, 1.0);
         assert_eq!(red.over(blue), Color::rgb(0.5, 0.0, 0.5));
+    }
+
+    #[test]
+    fn corners_constructors_and_map() {
+        assert_eq!(Corners::all(2.0), Corners::new(2.0, 2.0, 2.0, 2.0));
+        let c = Corners::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(
+            (c.top_left, c.top_right, c.bottom_right, c.bottom_left),
+            (1.0, 2.0, 3.0, 4.0)
+        );
+        assert_eq!(c.map(|v| v * 2.0), Corners::new(2.0, 4.0, 6.0, 8.0));
+        assert_eq!(Corners::<f32>::default(), Corners::all(0.0));
+    }
+
+    #[test]
+    fn corners_is_zero() {
+        assert!(Corners::all(0.0).is_zero());
+        assert!(Corners::new(0.0, -1.0, 0.0, 0.0).is_zero());
+        assert!(!Corners::new(0.0, 0.0, 0.5, 0.0).is_zero());
     }
 }
