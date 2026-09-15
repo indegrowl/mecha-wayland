@@ -1,7 +1,47 @@
 #![deny(unsafe_code)]
-//! The one place the runner waits: an io_uring as a resource, typed
-//! operations that own their buffers until finished, one [`IoEvent`]
-//! signal per completion. Crate docs are completed in Task 2.
+//! The one place the runner waits.
+//!
+//! # Model
+//!
+//! - [`Ring`] is a resource over one io_uring. A module submits a typed
+//!   op, [`Ring::recvmsg`] or [`Ring::sendmsg`], and gets a [`Token`].
+//!   The ring owns the op's buffers until [`Ring::finish`] gives them
+//!   back as a [`Completed`]; the submitter keeps the fd open until then.
+//! - Every completion is one [`IoEvent`] signal. The module that owns
+//!   the token finishes it; every other module ignores it.
+//! - [`Ring::turn`] is one pass: [`BeforeWait`] (the last chance to
+//!   submit), block for at least one completion, one `IoEvent` each,
+//!   flush. The runner [`RingModule`] sets is tick, turn, repeat, until
+//!   a [`Stop`] signal.
+//! - A turn with no op in flight blocks forever: the Wayland read is
+//!   always armed, so an app with `WaylandModule` never waits on
+//!   nothing.
+//!
+//! This is the one crate in the workspace that allows unsafe code, in
+//! `op.rs` alone: the `msghdr`s the kernel reads and the submission push.
+//!
+//! # Quick start
+//!
+//! ```
+//! use std::os::fd::AsFd;
+//! use std::os::unix::net::UnixStream;
+//! use app::prelude::*;
+//! use ring::prelude::*;
+//!
+//! #[derive(Default)]
+//! struct Seen(Vec<IoEvent>);
+//! impl Resource for Seen {}
+//! fn note(app: &mut App, e: &IoEvent) { app.resource_mut::<Seen>().0.push(*e); }
+//!
+//! let (a, _b) = UnixStream::pair().unwrap();
+//! let mut app = App::new();
+//! app.add_module(RingModule::default()).init_resource::<Seen>().system(note);
+//! let token = app.resource_mut::<Ring>().sendmsg(a.as_fd(), b"hi".to_vec(), vec![]);
+//! Ring::turn(&mut app);
+//! assert_eq!(app.resource::<Seen>().0[0].token, token);
+//! let done = app.resource_mut::<Ring>().finish(token).unwrap();
+//! assert_eq!(done.buf, b"hi");
+//! ```
 
 use std::collections::HashMap;
 use std::io;
@@ -182,7 +222,54 @@ impl Drop for Ring {
     }
 }
 
-/// Placeholder until Task 2 sets the runner.
+impl Ring {
+    /// One turn: signal [`BeforeWait`] and flush; submit and block for at
+    /// least one completion; signal one [`IoEvent`] per completion, in
+    /// completion order; flush. Blocks forever if no op is in flight.
+    pub fn turn(app: &mut App) {
+        app.signal(BeforeWait);
+        app.flush();
+        let mut events = app.resource_mut::<Ring>().wait();
+        for e in events.drain(..) {
+            app.signal(e);
+        }
+        app.flush();
+        app.resource_mut::<Ring>().done = events;
+    }
+}
+
+fn on_stop(app: &mut App, _: &Stop) {
+    app.resource_mut::<Ring>().stopped = true;
+}
+
+/// Tick, turn, and stop when told. The runner every presentation module
+/// relies on: a tick per wake, nothing between wakes.
+fn run(mut app: App) {
+    loop {
+        app.tick();
+        Ring::turn(&mut app);
+        if app.resource::<Ring>().is_stopped() {
+            return;
+        }
+    }
+}
+
+/// Inserts [`Ring`] and sets the runner. Installs first among the
+/// platform modules; a second runner-setting module panics.
 pub struct RingModule {
+    /// Submission slots. 64 by default.
     pub entries: u32,
+}
+
+impl Default for RingModule {
+    fn default() -> Self {
+        RingModule { entries: 64 }
+    }
+}
+
+impl Module for RingModule {
+    fn install(self, app: &mut App) {
+        app.insert_resource(Ring::new(self.entries));
+        app.system(on_stop).set_runner(run);
+    }
 }
