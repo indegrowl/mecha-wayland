@@ -12,3 +12,6 @@ fontdue.workspace = true
 geometry.workspace = true
 png.workspace = true
 resvg = { workspace = true, optional = true }
+
+[dev-dependencies]
+paint.workspace = true

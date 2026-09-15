@@ -259,3 +259,100 @@ fn a_glyph_miss_dirties_only_the_cells_its_bitmap_crossed() {
         "glyph pages have no mips"
     );
 }
+
+use std::cell::RefCell;
+
+use app::prelude::*;
+use paint::prelude::*;
+
+thread_local! {
+    static UPLOADED: RefCell<Vec<(AtlasId, Cell)>> = const { RefCell::new(Vec::new()) };
+    static RUNS: RefCell<u32> = const { RefCell::new(0) };
+}
+
+/// A backend's upload system: runs when the core reports that a tick took
+/// `resource_mut::<Atlas>()`. Reads through `resource`, so the drain is
+/// not a write and the signal does not re-arm.
+fn upload(app: &mut App, _: &OnChanged<Atlas>) {
+    RUNS.with(|r| *r.borrow_mut() += 1);
+    let atlas = app.resource::<Atlas>();
+    atlas.drain_dirty(|p, c| UPLOADED.with(|u| u.borrow_mut().push((p.id(), c))));
+}
+
+/// A widget that asks for a glyph while it is built.
+struct Letter(char);
+impl Build for Letter {
+    type Widget = Letter;
+}
+impl Widget for Letter {
+    type Builder = Letter;
+    fn build(b: Letter, _: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        let mut atlas = s.resource_mut::<Atlas>();
+        let (font, id) = atlas.lookup(&[FontId(0)], b.0).unwrap();
+        atlas.glyph(font, id, 14);
+        b
+    }
+}
+
+#[test]
+fn as_a_resource_the_core_signals_a_backend_that_drains_what_a_widget_made() {
+    let mut app = App::new();
+    let mut atlas = Atlas::new();
+    atlas.add_font(INTER).unwrap();
+    app.insert_resource(atlas);
+    app.system(upload);
+
+    // The insert counts as a write: the first tick fires once and uploads
+    // nothing, since no page exists yet.
+    app.tick();
+    assert_eq!(RUNS.with(|r| *r.borrow()), 1, "insert_resource is a write");
+    assert!(UPLOADED.with(|u| u.borrow().is_empty()));
+
+    let root = app.root();
+    app.spawn(root, Letter('a'));
+    app.tick();
+    assert_eq!(
+        RUNS.with(|r| *r.borrow()),
+        2,
+        "the build's resource_mut fired the signal"
+    );
+    let first = UPLOADED.with(|u| std::mem::take(&mut *u.borrow_mut()));
+    assert_eq!(first.len(), 256, "the glyph page, whole");
+
+    app.tick();
+    assert_eq!(
+        RUNS.with(|r| *r.borrow()),
+        2,
+        "a tick that asked nothing does not run the system"
+    );
+    assert!(UPLOADED.with(|u| u.borrow().is_empty()));
+
+    app.spawn(root, Letter('b'));
+    app.tick();
+    assert_eq!(RUNS.with(|r| *r.borrow()), 3);
+    let second = UPLOADED.with(|u| std::mem::take(&mut *u.borrow_mut()));
+    assert!(
+        !second.is_empty() && second.len() <= 2,
+        "only the cells 'b' crossed"
+    );
+}
+
+#[test]
+fn paint_builds_sprites_from_atlas_tiles() {
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (_, a) = atlas.lookup(&[inter], 'a').unwrap();
+    let g = atlas.glyph(inter, a, 14);
+    let run = Paint::Monochrome(vec![MonochromeSprite::new(
+        g.tile,
+        geometry::Point::new(g.left, 14.0 - g.top),
+        geometry::Size::new(g.tile.bounds.width(), g.tile.bounds.height()),
+        Color::WHITE,
+    )]);
+    assert!(!run.is_invisible());
+
+    let art = atlas.insert(Class::Image, &image(32, 32)).unwrap();
+    let pic = Paint::Polychrome(PolychromeSprite::new(atlas.sprite(art).tile));
+    assert!(!pic.is_invisible());
+    assert_eq!(atlas.class(atlas.sprite(art).tile.atlas), Class::Image);
+}

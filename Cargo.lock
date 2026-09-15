@@ -40,6 +40,7 @@ dependencies = [
  "app",
  "fontdue",
  "geometry",
+ "paint",
  "png 0.18.1",
  "resvg",
 ]

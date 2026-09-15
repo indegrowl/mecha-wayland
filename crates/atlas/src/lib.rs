@@ -1,6 +1,57 @@
 #![forbid(unsafe_code)]
 //! The atlas: every pixel a sprite can name, and the ids that name them.
-//! Crate docs are completed in a later task.
+//!
+//! # Model
+//!
+//! - One [`Atlas`] resource, no module, no system, no signal of its own.
+//!   A caller asks it for a glyph, an icon or an image and gets an
+//!   [`AtlasTile`] back in the same call. A backend listens for the
+//!   core's `OnChanged<Atlas>`, sent at the `PostTick` of a tick that took
+//!   `resource_mut::<Atlas>()`, and drains the cells that changed since
+//!   it last asked through `resource::<Atlas>()`: every method it calls
+//!   takes `&self`, so the drain is not a write.
+//! - Four [`Class`]es of texture over one page implementation. `Glyph`
+//!   and `Icon` pages are `R8` coverage, `Image` pages `Rgba8` straight
+//!   alpha; `External` names a texture the atlas does not hold, a dmabuf
+//!   a producer describes with an [`External`]. Pages are 1024 square.
+//! - A glyph is rasterized once per font, glyph id and whole pixel size
+//!   with fontdue, and found again through index vectors, no hashing. An
+//!   icon or image is inserted once at its master size and drawn at that
+//!   size or smaller: its page holds four mip levels the CPU generates.
+//! - Nothing is removed. Every [`AtlasId`], [`SpriteId`] and [`FontId`]
+//!   is a dense index a caller holds for the app's life. A tile never
+//!   moves: the atlas grows by adding pages.
+//! - Dirty tracking is a 16 by 16 grid of [`Cell`]s per page that serves
+//!   every mip level; a backend uploads each dirty cell once per level and
+//!   a tile is never sent twice.
+//!
+//! # Quick start
+//!
+//! ```
+//! use atlas::prelude::*;
+//!
+//! let mut atlas = Atlas::new();
+//! let inter = atlas.add_font(include_bytes!("../tests/fixtures/Inter-Regular.ttf")).unwrap();
+//! atlas.warm(inter, 14, ' '..='~');
+//!
+//! // A 2 by 2 opaque grey image, as a caller who decoded a PNG would hand in.
+//! let art = atlas
+//!     .insert(Class::Image, &Bitmap { width: 2, height: 2, format: Format::Rgba8, pixels: vec![128; 16] })
+//!     .unwrap();
+//! assert_eq!(atlas.class(atlas.sprite(art).tile.atlas), Class::Image);
+//!
+//! // A text widget resolving 'a' at 14 px: the glyph is warm, so this packs nothing.
+//! let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+//! let g = atlas.glyph(font, id, 14);
+//! assert!(g.advance > 0.0);
+//!
+//! // A backend's drain: two new pages, every cell of each.
+//! let mut cells = 0;
+//! atlas.drain_dirty(|_, _| cells += 1);
+//! assert_eq!(cells, 512);
+//! atlas.drain_dirty(|_, _| cells += 1);
+//! assert_eq!(cells, 512, "a second drain has nothing");
+//! ```
 
 use app::Resource;
 use geometry::{Rect, Size};
