@@ -84,21 +84,19 @@ fn take_done() -> Vec<Vec<NodeId>> {
     DONE.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
-#[allow(dead_code)]
 fn take_requested() -> Vec<NodeId> {
     REQUESTED.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
-#[allow(dead_code)]
+
 fn take_frames() -> Vec<NodeId> {
     FRAMES.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
-#[allow(dead_code)]
+
 fn take_windows_changed() -> u32 {
     WINDOWS_CHANGED.with(|n| std::mem::take(&mut *n.borrow_mut()))
 }
 
 /// The WSI stand-in: answers every `FrameRequested` with a `Frame`.
-#[allow(dead_code)]
 fn answer(app: &mut App, r: &FrameRequested) {
     app.signal(Frame(r.0));
 }
@@ -117,7 +115,6 @@ fn app() -> App {
 }
 
 /// `app()` with the loop closed by `answer`.
-#[allow(dead_code)]
 fn app_closed() -> App {
     let mut app = app();
     app.system(answer);
@@ -386,4 +383,83 @@ fn stale_and_non_window_ids_are_ignored_and_a_frame_when_not_pending_is_harmless
     app.signal(RequestFrame(win.id()));
     app.flush();
     assert_eq!(take_requested(), vec![win.id()], "still works afterwards");
+}
+
+// ── 7, 8: the WSI's events ──────────────────────────────────────────────
+
+#[test]
+fn resized_rewrites_the_style_only_when_the_size_differs() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    app.tick();
+    take_done();
+
+    app.emit(Resized { size: Size::new(640.0, 360.0) }, win);
+    app.tick();
+    let style = app.component::<LayoutStyle>(win).unwrap();
+    assert_eq!((style.width, style.height), (px(640.0), px(360.0)));
+    assert_eq!(
+        app.component::<Layout>(win).unwrap().rect,
+        Rect::new(0.0, 0.0, 640.0, 360.0)
+    );
+    assert_eq!(take_done(), vec![vec![win.id()]], "relaid out that tick");
+
+    app.emit(Resized { size: Size::new(640.0, 360.0) }, win);
+    app.tick();
+    assert_eq!(take_done(), vec![vec![]], "same size: no style write, nothing dirty");
+    assert!(take_requested().is_empty(), "Resized never asks for a frame");
+}
+
+#[test]
+fn scale_factor_changed_stores_the_scale_and_asks_for_a_frame_once() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    app.tick();
+
+    app.emit(ScaleFactorChanged { scale: 2.0 }, win);
+    app.flush();
+    assert_eq!(app.widget::<Window>(win).unwrap().scale(), 2.0);
+    assert_eq!(take_requested(), vec![win.id()]);
+
+    app.signal(Frame(win.id()));
+    app.flush();
+    app.emit(ScaleFactorChanged { scale: 2.0 }, win);
+    app.flush();
+    assert_eq!(app.widget::<Window>(win).unwrap().scale(), 2.0);
+    assert!(take_requested().is_empty(), "the same scale again asks nothing");
+}
+
+/// A spawn site's own handler on `CloseRequested`: removes the window. A
+/// `Spawner` cannot name the app root, so the window is spawned by the
+/// test and handed to the builder; `Spawner::on` accepts any live target.
+struct Closer;
+struct CloserBuilder {
+    win: Handle<Window>,
+}
+impl Build for CloserBuilder {
+    type Widget = Closer;
+}
+impl Widget for Closer {
+    type Builder = CloserBuilder;
+    fn build(b: CloserBuilder, _: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        let win = b.win;
+        s.on::<CloseRequested>(win, move |ctx, _| {
+            ctx.remove(win);
+        });
+        Closer
+    }
+}
+
+#[test]
+fn close_requested_is_the_spawn_sites_to_handle() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    app.spawn(app.root(), CloserBuilder { win });
+    app.tick();
+    assert_eq!(windows(&app), vec![win.id()]);
+
+    app.emit(CloseRequested, win);
+    app.tick();
+    assert!(!app.is_live(win));
+    assert!(windows(&app).is_empty());
 }

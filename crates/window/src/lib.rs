@@ -4,12 +4,13 @@
 //! whatever presents a window. Crate docs are completed in a later task.
 
 use app::prelude::*;
+use geometry::Size;
 use layout::prelude::*;
 
 pub mod prelude {
     pub use crate::{
-        Frame, FrameRequested, InWindow, RequestFrame, Window, WindowBuilder, WindowModule,
-        Windows, window,
+        CloseRequested, Frame, FrameRequested, InWindow, RequestFrame, Resized,
+        ScaleFactorChanged, Window, WindowBuilder, WindowModule, Windows, window,
     };
 }
 
@@ -85,6 +86,8 @@ impl Widget for Window {
         *s.component_mut::<LayoutRoot>(me).unwrap() = LayoutRoot(true);
         *s.component_mut::<InWindow>(me).unwrap() = InWindow(Some(me.id()));
         s.resource_mut::<Windows>().ids.push(me.id());
+        s.on::<Resized>(me, on_resized);
+        s.on::<ScaleFactorChanged>(me, on_scale_factor_changed);
         Window {
             title: b.title,
             scale: 1.0,
@@ -158,6 +161,30 @@ impl Signal for FrameRequested {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame(pub NodeId);
 impl Signal for Frame {}
+
+/// The size the WSI settled, in logical pixels, never zero. Emitted by
+/// the WSI at the window node once the compositor has configured it, and
+/// again on every change. A size matching the style is still an event
+/// (it is also the ack) but writes nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Resized {
+    pub size: Size,
+}
+impl Event for Resized {}
+
+/// The scale of the window's output, as the WSI reports it. Layout stays
+/// in logical pixels; the drawer reads `Window::scale`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScaleFactorChanged {
+    pub scale: f32,
+}
+impl Event for ScaleFactorChanged {}
+
+/// The shell asked for the window to close. Advice: the spawn site's own
+/// handler removes the window, or ignores it. This module does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseRequested;
+impl Event for CloseRequested {}
 
 // ---------------------------------------------------------------------------
 // Module
@@ -241,5 +268,50 @@ fn on_request_frame(app: &mut App, r: &RequestFrame) {
 fn on_frame(app: &mut App, f: &Frame) {
     if let Some(w) = app.widget_mut::<Window>(f.0) {
         w.pending = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers, on the window's own node
+// ---------------------------------------------------------------------------
+
+/// The settled size is the window's new size request; layout picks it up
+/// at the next `PostTick`. A matching size writes nothing, so the record
+/// is not flagged and nothing is relaid out.
+fn on_resized(ctx: &mut Context<'_, Window>, r: &Resized) {
+    debug_assert!(
+        r.size.width > 0.0 && r.size.height > 0.0,
+        "Resized with a zero dimension: {:?}",
+        r.size
+    );
+    let (width, height) = (px(r.size.width), px(r.size.height));
+    let same = ctx
+        .component::<LayoutStyle>()
+        .is_some_and(|s| s.width == width && s.height == height);
+    if same {
+        return;
+    }
+    if let Some(mut style) = ctx.component_mut::<LayoutStyle>() {
+        style.width = width;
+        style.height = height;
+    }
+}
+
+/// A new scale means the content must be redrawn even though no layout
+/// moved, so the window asks for a frame itself. The same scale again
+/// does nothing.
+fn on_scale_factor_changed(ctx: &mut Context<'_, Window>, e: &ScaleFactorChanged) {
+    let me = ctx.handle().id();
+    let changed = {
+        let win = ctx.me();
+        if win.scale == e.scale {
+            false
+        } else {
+            win.scale = e.scale;
+            true
+        }
+    };
+    if changed {
+        ctx.signal(RequestFrame(me));
     }
 }
