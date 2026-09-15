@@ -7,14 +7,16 @@ use geometry::{Rect, Size};
 
 pub mod prelude {
     pub use crate::{
-        Atlas, AtlasId, AtlasTile, Bitmap, Cell, Class, Error, FontId, Format, Page, Sprite,
-        SpriteId,
+        Atlas, AtlasId, AtlasTile, Bitmap, Cell, Class, Error, FontId, Format, Glyph, Line, Page,
+        Sprite, SpriteId,
     };
 }
 
+mod font;
 mod mip;
 mod page;
 
+pub use font::{Glyph, Line};
 pub use page::{CELL, CELLS, Cell, PAGE, Page};
 
 /// Which texture a tile is in: a dense index the atlas mints, in creation
@@ -146,6 +148,10 @@ pub struct Atlas {
     owners: Vec<Owner>,
     /// Indexed by `SpriteId`.
     sprites: Vec<Sprite>,
+    /// Indexed by `FontId`.
+    fonts: Vec<font::Font>,
+    /// Indexed by the value a font's per-size index vector holds.
+    glyphs: Vec<Glyph>,
 }
 
 impl Resource for Atlas {}
@@ -163,6 +169,8 @@ impl Atlas {
             pages: [Vec::new(), Vec::new(), Vec::new()],
             owners: Vec::new(),
             sprites: Vec::new(),
+            fonts: Vec::new(),
+            glyphs: Vec::new(),
         }
     }
 
@@ -277,6 +285,12 @@ impl Atlas {
                 }
             }
         }
+    }
+
+    /// How many glyph records exist. For tests.
+    #[cfg(test)]
+    pub(crate) fn glyph_count(&self) -> usize {
+        self.glyphs.len()
     }
 }
 

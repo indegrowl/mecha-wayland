@@ -26,6 +26,7 @@ layout = { path = "crates/layout" }
 paint = { path = "crates/paint" }
 render = { path = "crates/render" }
 window = { path = "crates/window" }
+fontdue = "0.9"
 smallvec = "1"
 taffy = { version = "0.10.1", default-features = false, features = ["std", "flexbox", "block_layout"] }
 

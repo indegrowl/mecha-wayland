@@ -172,3 +172,31 @@ fn a_backend_reads_a_dirty_cell_at_every_level() {
         );
     }
 }
+
+const INTER: &[u8] = include_bytes!("fixtures/Inter-Regular.ttf");
+
+#[test]
+fn a_glyph_miss_dirties_only_the_cells_its_bitmap_crossed() {
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (_, a) = atlas.lookup(&[inter], 'a').unwrap();
+    let g = atlas.glyph(inter, a, 14);
+    let mut cells = Vec::new();
+    atlas.drain_dirty(|_, c| cells.push(c));
+    assert_eq!(cells.len(), 256, "the glyph page is new");
+    cells.clear();
+    let (_, b) = atlas.lookup(&[inter], 'b').unwrap();
+    let gb = atlas.glyph(inter, b, 14);
+    atlas.drain_dirty(|_, c| cells.push(c));
+    assert!(
+        !cells.is_empty() && cells.len() <= 2,
+        "one or two cells: {cells:?}"
+    );
+    assert_eq!(gb.tile.atlas, g.tile.atlas);
+    assert_eq!(atlas.class(g.tile.atlas), Class::Glyph);
+    assert_eq!(
+        atlas.pages().next().unwrap().levels(),
+        1,
+        "glyph pages have no mips"
+    );
+}

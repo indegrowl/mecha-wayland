@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 app.workspace = true
+fontdue.workspace = true
 geometry.workspace = true
