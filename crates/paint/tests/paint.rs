@@ -57,12 +57,13 @@ fn black() -> Paint {
 fn glyph(color: Color) -> MonochromeSprite {
     MonochromeSprite {
         tile: AtlasTile {
-            atlas: AtlasId,
+            atlas: AtlasId(0),
             bounds: Rect::new(0.0, 0.0, 8.0, 8.0),
         },
         offset: Point::ZERO,
         size: Size::new(8.0, 8.0),
         color,
+        is_opaque: true,
     }
 }
 

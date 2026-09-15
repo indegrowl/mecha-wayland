@@ -7,6 +7,7 @@
 use std::ops::{Add, Sub};
 
 /// A position: `x` right, `y` down.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point {
     pub x: f32,
@@ -36,6 +37,7 @@ impl Sub for Point {
 }
 
 /// An extent: width across, height down.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Size {
     pub width: f32,
@@ -51,6 +53,7 @@ impl Size {
 }
 
 /// An axis-aligned rectangle: its top-left corner and its extent.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Rect {
     pub origin: Point,
@@ -107,6 +110,7 @@ impl Rect {
 }
 
 /// One value per side of a box: padding, margin, border, inset.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Insets<T> {
     pub top: T,
@@ -162,6 +166,7 @@ impl<T: Copy + Add<Output = T>> Insets<T> {
 
 /// A colour with straight (not premultiplied) alpha, each channel
 /// `0.0..=1.0`. The default is transparent black.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Color {
     pub r: f32,
@@ -229,6 +234,7 @@ impl Color {
 
 /// One value per corner, clockwise from the top left: CSS's
 /// `border-radius` order.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Corners<T> {
     pub top_left: T,
@@ -386,5 +392,22 @@ mod tests {
         assert!(Corners::all(0.0).is_zero());
         assert!(Corners::new(0.0, -1.0, 0.0, 0.0).is_zero());
         assert!(!Corners::new(0.0, 0.0, 0.5, 0.0).is_zero());
+    }
+
+    #[test]
+    fn plain_data_has_c_layout() {
+        use std::mem::{align_of, size_of};
+        assert_eq!((size_of::<Point>(), align_of::<Point>()), (8, 4));
+        assert_eq!((size_of::<Size>(), align_of::<Size>()), (8, 4));
+        assert_eq!((size_of::<Rect>(), align_of::<Rect>()), (16, 4));
+        assert_eq!(
+            (size_of::<Insets<f32>>(), align_of::<Insets<f32>>()),
+            (16, 4)
+        );
+        assert_eq!((size_of::<Color>(), align_of::<Color>()), (16, 4));
+        assert_eq!(
+            (size_of::<Corners<f32>>(), align_of::<Corners<f32>>()),
+            (16, 4)
+        );
     }
 }

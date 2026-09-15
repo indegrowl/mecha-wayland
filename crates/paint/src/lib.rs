@@ -16,7 +16,7 @@
 //!   either changes, so paint never sees a string.
 //! - A sprite names its pixels through an [`AtlasTile`]: an [`AtlasId`]
 //!   and bounds in atlas pixels. Paint knows nothing else about atlases;
-//!   the id is a placeholder for the atlas module to shape.
+//!   the id is an index the atlas module mints.
 //! - [`PaintModule`] registers the component and nothing else. A write is
 //!   reported by the core's `OnChanged<Paint>` at the next `PostTick`, an
 //!   equal write through `set_if_neq` is not, and nothing here compares
@@ -70,18 +70,20 @@ pub mod prelude {
     pub use geometry::{Color, Corners};
 }
 
-/// Which atlas a tile is in. A placeholder: an empty struct, so that a
-/// sprite can name an atlas today and the atlas spec can give the id its
-/// real shape without a widget or a renderer changing which field it
-/// reads. Minted by the atlas, never by paint.
+/// Which atlas a tile is in: a dense index the atlas mints, unique across
+/// the coverage and colour kinds, so a backend keys its textures by it.
+/// Minted by the atlas, never by paint.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct AtlasId;
+pub struct AtlasId(pub u32);
 
 /// One rectangle of an atlas: `bounds` in whole atlas pixels, padding
 /// excluded, held as a `Rect` because that is the shared type. A tile's
 /// bounds are stable while its atlas exists; an atlas grows by adding
 /// textures, never by moving tiles. Paint never sees a texture's size: a
 /// renderer divides `bounds` by the size of the texture it uploaded.
+/// `repr(C)` because a render command embeds it and is uploaded as is.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtlasTile {
     pub atlas: AtlasId,
@@ -97,6 +99,12 @@ pub struct Quad {
     pub radii: Corners<f32>,
     pub border: Insets<f32>,
     pub border_color: Color,
+    /// The author's opt-out of the opaque pass. `true`, the default, says
+    /// "draw me opaque whenever the renderer knows the solid colour behind
+    /// me"; `false` says "blend me whatever is behind". A widget leaves
+    /// it alone; a debug overlay that must tint everything under it
+    /// clears it.
+    pub is_opaque: bool,
 }
 
 impl Default for Quad {
@@ -116,6 +124,7 @@ impl Quad {
             radii: Corners::all(0.0),
             border: Insets::all(0.0),
             border_color: Color::TRANSPARENT,
+            is_opaque: true,
         }
     }
 
@@ -152,6 +161,12 @@ impl Quad {
         self
     }
 
+    /// See [`Quad::is_opaque`].
+    pub fn opaque(mut self, opaque: bool) -> Self {
+        self.is_opaque = opaque;
+        self
+    }
+
     /// True when a renderer would leave no pixel behind: a transparent
     /// fill, and a border that has no width on any side or no colour.
     pub fn is_invisible(&self) -> bool {
@@ -174,9 +189,28 @@ pub struct MonochromeSprite {
     pub offset: Point,
     pub size: Size,
     pub color: Color,
+    /// See [`Quad::is_opaque`].
+    pub is_opaque: bool,
 }
 
 impl MonochromeSprite {
+    /// That tile, tinted, at `offset` in `size`; opaque.
+    pub const fn new(tile: AtlasTile, offset: Point, size: Size, color: Color) -> Self {
+        Self {
+            tile,
+            offset,
+            size,
+            color,
+            is_opaque: true,
+        }
+    }
+
+    /// See [`Quad::is_opaque`].
+    pub fn opaque(mut self, opaque: bool) -> Self {
+        self.is_opaque = opaque;
+        self
+    }
+
     /// True when a renderer would leave no pixel behind: a transparent
     /// tint or an empty box.
     pub fn is_invisible(&self) -> bool {
@@ -194,6 +228,8 @@ pub struct PolychromeSprite {
     /// `0.0..=1.0`; `1.0` is opaque.
     pub opacity: f32,
     pub grayscale: bool,
+    /// See [`Quad::is_opaque`].
+    pub is_opaque: bool,
 }
 
 /// The verbs, by value.
@@ -205,6 +241,7 @@ impl PolychromeSprite {
             radii: Corners::all(0.0),
             opacity: 1.0,
             grayscale: false,
+            is_opaque: true,
         }
     }
 
@@ -226,6 +263,12 @@ impl PolychromeSprite {
 
     pub fn grayscale(mut self, grayscale: bool) -> Self {
         self.grayscale = grayscale;
+        self
+    }
+
+    /// See [`Quad::is_opaque`].
+    pub fn opaque(mut self, opaque: bool) -> Self {
+        self.is_opaque = opaque;
         self
     }
 
@@ -286,18 +329,13 @@ mod tests {
 
     fn tile() -> AtlasTile {
         AtlasTile {
-            atlas: AtlasId,
+            atlas: AtlasId(0),
             bounds: Rect::new(0.0, 0.0, 8.0, 8.0),
         }
     }
 
     fn glyph(color: Color) -> MonochromeSprite {
-        MonochromeSprite {
-            tile: tile(),
-            offset: Point::new(1.0, 2.0),
-            size: Size::new(8.0, 8.0),
-            color,
-        }
+        MonochromeSprite::new(tile(), Point::new(1.0, 2.0), Size::new(8.0, 8.0), color)
     }
 
     #[test]
@@ -354,11 +392,11 @@ mod tests {
     #[test]
     fn an_atlas_tile_is_plain_data() {
         let tile = AtlasTile {
-            atlas: AtlasId,
+            atlas: AtlasId(0),
             bounds: Rect::new(0.0, 0.0, 16.0, 16.0),
         };
         let other = AtlasTile {
-            atlas: AtlasId,
+            atlas: AtlasId(0),
             bounds: Rect::new(16.0, 0.0, 16.0, 16.0),
         };
         assert_ne!(tile, other, "different bounds are different tiles");
@@ -420,5 +458,39 @@ mod tests {
         );
         assert!(Paint::Polychrome(PolychromeSprite::new(tile()).opacity(0.0)).is_invisible());
         assert!(!Paint::Polychrome(PolychromeSprite::new(tile())).is_invisible());
+    }
+
+    #[test]
+    fn primitives_default_to_opaque_and_the_verb_clears_it() {
+        assert!(Quad::new(Color::WHITE).is_opaque);
+        assert!(Quad::default().is_opaque);
+        assert!(!Quad::new(Color::WHITE).opaque(false).is_opaque);
+        assert!(glyph(Color::WHITE).is_opaque);
+        assert!(!glyph(Color::WHITE).opaque(false).is_opaque);
+        assert!(PolychromeSprite::new(tile()).is_opaque);
+        assert!(!PolychromeSprite::new(tile()).opaque(false).is_opaque);
+    }
+
+    #[test]
+    fn is_invisible_ignores_is_opaque() {
+        assert!(Quad::default().opaque(false).is_invisible());
+        assert!(!Quad::new(Color::WHITE).opaque(false).is_invisible());
+        assert!(glyph(Color::TRANSPARENT).opaque(false).is_invisible());
+        assert!(!glyph(Color::WHITE).opaque(false).is_invisible());
+        assert!(
+            PolychromeSprite::new(tile())
+                .opacity(0.0)
+                .opaque(false)
+                .is_invisible()
+        );
+    }
+
+    #[test]
+    fn atlas_types_have_c_layout() {
+        use std::mem::{align_of, size_of};
+        assert_eq!((size_of::<AtlasId>(), align_of::<AtlasId>()), (4, 4));
+        assert_eq!((size_of::<AtlasTile>(), align_of::<AtlasTile>()), (20, 4));
+        assert_eq!(AtlasId(3).0, 3);
+        assert_eq!(AtlasId::default(), AtlasId(0));
     }
 }
