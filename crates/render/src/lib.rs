@@ -12,10 +12,12 @@
 //!   exactly that colour behind a node, starting from the window's clear
 //!   colour. A primitive inside a solid goes to the opaque pass whole,
 //!   its `background` set, so the shader composites its edges, border or
-//!   tile onto it and writes depth. A primitive with nothing known behind
-//!   it blends in the translucent pass; an opaque quad with edges also
-//!   writes its flat interior as an opaque fill at `z + 1`. Each
-//!   primitive's `is_opaque` in `paint` opts out of the opaque pass.
+//!   tile onto it and writes depth. An opaque, edge-free quad with an
+//!   opaque colour is a plain fill and goes to the opaque pass wherever
+//!   it is. Anything else with nothing known behind it blends in the
+//!   translucent pass; an opaque quad with edges also writes its flat
+//!   interior as an opaque fill at `z + 1`. Each primitive's `is_opaque`
+//!   in `paint` opts out of the opaque pass.
 //! - `Layout` and `Paint` changes, and removals, mark the nodes and raise
 //!   `RequestFrame` for their window; nothing else does, and nothing runs
 //!   on `Tick`. The walk damages a marked node's old and new bounds, a
