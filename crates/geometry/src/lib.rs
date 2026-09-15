@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
-//! Plain geometry every tier shares: a point, a size, a rectangle and a
-//! per-side inset. All `Copy`, `Default`, `PartialEq`; `f32` in whatever
-//! unit the caller means, which for layout is pixels of a root's
-//! coordinate space, `y` growing downward.
+//! Plain geometry every tier shares: a point, a size, a rectangle, a
+//! per-side inset, a per-corner value and a colour. All `Copy`, `Default`,
+//! `PartialEq`; `f32` in whatever unit the caller means, which for layout
+//! is pixels of a root's coordinate space, `y` growing downward.
 
 use std::ops::{Add, Sub};
 
@@ -160,8 +160,74 @@ impl<T: Copy + Add<Output = T>> Insets<T> {
     }
 }
 
+/// A colour with straight (not premultiplied) alpha, each channel
+/// `0.0..=1.0`. The default is transparent black.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Color {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl Color {
+    pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
+    pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
+    pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
+
+    /// Opaque.
+    pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
+        Self { r, g, b, a: 1.0 }
+    }
+
+    pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self { r, g, b, a }
+    }
+
+    /// Opaque, from 8-bit channels.
+    pub const fn from_rgb8(r: u8, g: u8, b: u8) -> Self {
+        Self::from_rgba8(r, g, b, 255)
+    }
+
+    /// From 8-bit channels, alpha included.
+    pub const fn from_rgba8(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self::rgba(
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        )
+    }
+
+    /// The same colour with `a` for its alpha.
+    pub fn with_alpha(self, a: f32) -> Self {
+        Self { a, ..self }
+    }
+
+    /// True when drawing this colour leaves no pixel behind.
+    pub fn is_transparent(self) -> bool {
+        self.a <= 0.0
+    }
+
+    /// Source-over compositing: `self` drawn on top of `under`. Straight
+    /// alpha in, straight alpha out; `TRANSPARENT` when both are.
+    pub fn over(self, under: Color) -> Color {
+        let a = self.a + under.a * (1.0 - self.a);
+        if a <= 0.0 {
+            return Color::TRANSPARENT;
+        }
+        let channel = |s: f32, u: f32| (s * self.a + u * under.a * (1.0 - self.a)) / a;
+        Color {
+            r: channel(self.r, under.r),
+            g: channel(self.g, under.g),
+            b: channel(self.b, under.b),
+            a,
+        }
+    }
+}
+
 pub mod prelude {
-    pub use crate::{Insets, Point, Rect, Size};
+    pub use crate::{Color, Insets, Point, Rect, Size};
 }
 
 #[cfg(test)]
@@ -212,5 +278,46 @@ mod tests {
         assert_eq!(i.horizontal(), 6.0);
         assert_eq!(i.vertical(), 4.0);
         assert_eq!(i.map(|v| v * 2.0), Insets::new(2.0, 4.0, 6.0, 8.0));
+    }
+
+    #[test]
+    fn color_constructors() {
+        assert_eq!(Color::rgb(0.1, 0.2, 0.3), Color::rgba(0.1, 0.2, 0.3, 1.0));
+        assert_eq!(Color::TRANSPARENT, Color::default());
+        assert_eq!(Color::from_rgb8(255, 0, 0), Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(Color::from_rgb8(0, 51, 102), Color::rgb(0.0, 0.2, 0.4));
+        assert_eq!(Color::from_rgba8(0, 0, 0, 255), Color::BLACK);
+        assert_eq!(
+            Color::from_rgba8(255, 255, 255, 0),
+            Color::WHITE.with_alpha(0.0)
+        );
+        assert!(Color::TRANSPARENT.is_transparent());
+        assert!(Color::WHITE.with_alpha(0.0).is_transparent());
+        assert!(!Color::WHITE.with_alpha(0.01).is_transparent());
+    }
+
+    #[test]
+    fn opaque_over_anything_is_itself() {
+        let red = Color::rgb(1.0, 0.0, 0.0);
+        assert_eq!(red.over(Color::WHITE), red);
+        assert_eq!(red.over(Color::TRANSPARENT), red);
+        assert_eq!(red.over(Color::rgba(0.0, 1.0, 0.0, 0.5)), red);
+    }
+
+    #[test]
+    fn transparent_over_a_color_is_that_color() {
+        let green = Color::rgba(0.0, 1.0, 0.0, 0.5);
+        assert_eq!(Color::TRANSPARENT.over(green), green);
+        assert_eq!(
+            Color::TRANSPARENT.over(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
+    }
+
+    #[test]
+    fn half_alpha_over_opaque_mixes_with_alpha_one() {
+        let red = Color::rgba(1.0, 0.0, 0.0, 0.5);
+        let blue = Color::rgb(0.0, 0.0, 1.0);
+        assert_eq!(red.over(blue), Color::rgb(0.5, 0.0, 0.5));
     }
 }
