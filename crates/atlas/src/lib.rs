@@ -8,6 +8,7 @@ pub mod prelude {
     pub use crate::{AtlasId, AtlasTile, Bitmap, Cell, Class, FontId, Format, Page, SpriteId};
 }
 
+mod mip;
 mod page;
 
 pub use page::{CELL, CELLS, Cell, PAGE, Page};
