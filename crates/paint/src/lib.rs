@@ -2,7 +2,15 @@
 //! The paint module: what a node looks like, held as one [`Paint`] per
 //! node. Crate docs are completed in a later task.
 
+use app::{App, Component, Module};
 use geometry::{Color, Corners, Insets, Point, Rect, Size};
+
+pub mod prelude {
+    pub use crate::{
+        AtlasId, AtlasTile, MonochromeSprite, Paint, PaintModule, PolychromeSprite, Quad,
+    };
+    pub use geometry::{Color, Corners};
+}
 
 /// Which atlas a tile is in. A placeholder: an empty struct, so that a
 /// sprite can name an atlas today and the atlas spec can give the id its
@@ -169,6 +177,51 @@ impl PolychromeSprite {
     }
 }
 
+/// The one primitive a node draws, or nothing. Dense: every node has one,
+/// and the default draws nothing. A node draws one primitive kind; a node
+/// that wants two visuals, a background and a label, is two nodes. Text
+/// is a `Monochrome` run of many, an icon a run of one, an image a
+/// `Polychrome`. The two sprite variants are the atlas kind a renderer
+/// picks: a coverage texture behind `Monochrome`, a colour texture behind
+/// `Polychrome`; the atlas guarantees a tile it mints for one is never
+/// handed to the other.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Paint {
+    #[default]
+    None,
+    Quad(Quad),
+    Monochrome(Vec<MonochromeSprite>),
+    Polychrome(PolychromeSprite),
+}
+
+impl Component for Paint {}
+
+impl Paint {
+    /// True when a renderer would leave no pixel behind. An empty run is
+    /// invisible.
+    pub fn is_invisible(&self) -> bool {
+        match self {
+            Paint::None => true,
+            Paint::Quad(quad) => quad.is_invisible(),
+            Paint::Monochrome(run) => run.iter().all(MonochromeSprite::is_invisible),
+            Paint::Polychrome(sprite) => sprite.is_invisible(),
+        }
+    }
+}
+
+/// Registers [`Paint`] and nothing else. No system, no resource, no
+/// signal: a write is reported by the core's own `OnChanged<Paint>` drain
+/// at the next `PostTick`. Installs after nothing in particular. Installing
+/// it twice panics on the second registration, as the core specifies for
+/// any module.
+pub struct PaintModule;
+
+impl Module for PaintModule {
+    fn install(self, app: &mut App) {
+        app.register_component::<Paint>();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +334,29 @@ mod tests {
         let image = image.radii(Corners::new(1.0, 2.0, 3.0, 4.0)).opacity(0.0);
         assert_eq!(image.radii, Corners::new(1.0, 2.0, 3.0, 4.0));
         assert!(image.is_invisible(), "zero opacity");
+    }
+
+    #[test]
+    fn paint_defaults_to_none_and_is_invisible() {
+        assert_eq!(Paint::default(), Paint::None);
+        assert!(Paint::None.is_invisible());
+    }
+
+    #[test]
+    fn paint_visibility_follows_its_primitive() {
+        assert!(Paint::Quad(Quad::default()).is_invisible());
+        assert!(!Paint::Quad(Quad::new(Color::BLACK)).is_invisible());
+        assert!(Paint::Monochrome(Vec::new()).is_invisible(), "an empty run");
+        assert!(
+            Paint::Monochrome(vec![glyph(Color::TRANSPARENT), glyph(Color::TRANSPARENT)])
+                .is_invisible(),
+            "a run of invisible sprites"
+        );
+        assert!(
+            !Paint::Monochrome(vec![glyph(Color::TRANSPARENT), glyph(Color::BLACK)]).is_invisible(),
+            "one visible sprite is enough"
+        );
+        assert!(Paint::Polychrome(PolychromeSprite::new(tile()).opacity(0.0)).is_invisible());
+        assert!(!Paint::Polychrome(PolychromeSprite::new(tile())).is_invisible());
     }
 }
