@@ -65,11 +65,6 @@ impl Signal for FrameRequested {}
 struct Frame(NodeId);
 impl Signal for Frame {}
 
-#[derive(Debug, Default)]
-#[allow(dead_code)]
-struct Windows;
-impl Resource for Windows {}
-
 // Systems cannot capture, so the tests log through thread-locals. Each
 // test runs on its own thread, so logs never mix.
 thread_local! {
@@ -225,4 +220,59 @@ fn in_window_is_filled_for_every_node_under_a_window_and_none_elsewhere() {
     assert_eq!(in_window(owned.id()), None, "the owner's child");
     assert_eq!(in_window(outside.id()), None, "a leaf under the app root");
     assert_eq!(in_window(app.root()), None, "the app root");
+}
+
+// ── 3: Windows ──────────────────────────────────────────────────────────
+
+fn windows(app: &App) -> Vec<NodeId> {
+    app.resource::<Windows>().iter().collect()
+}
+
+#[test]
+fn windows_lists_live_windows_in_spawn_order_and_signals_only_on_change() {
+    let mut app = app();
+    let a = app.spawn(app.root(), a_window());
+    let b = app.spawn(app.root(), a_window());
+    let leaf = app.spawn(a, Leaf);
+    app.tick();
+    assert_eq!(windows(&app), vec![a.id(), b.id()]);
+    assert_eq!(app.resource::<Windows>().len(), 2);
+    assert!(app.resource::<Windows>().contains(a.id()));
+    assert_eq!(take_windows_changed(), 1, "the two pushes, drained once");
+
+    assert!(app.remove(leaf));
+    app.tick();
+    assert_eq!(windows(&app), vec![a.id(), b.id()]);
+    assert_eq!(take_windows_changed(), 0, "a non-window removal writes nothing");
+
+    assert!(app.remove(a));
+    app.tick();
+    assert_eq!(windows(&app), vec![b.id()]);
+    assert_eq!(take_windows_changed(), 1);
+
+    app.tick();
+    assert_eq!(take_windows_changed(), 0, "nothing changed");
+}
+
+#[test]
+fn removing_a_subtree_under_a_window_and_removing_two_windows_at_once() {
+    let mut app = app();
+    let a = app.spawn(app.root(), a_window());
+    let b = app.spawn(app.root(), a_window());
+    let panel = app.spawn(a, PanelBuilder);
+    app.tick();
+    assert_eq!(windows(&app), vec![a.id(), b.id()]);
+    take_windows_changed();
+
+    assert!(app.remove(panel));
+    app.tick();
+    assert_eq!(windows(&app), vec![a.id(), b.id()]);
+    assert_eq!(take_windows_changed(), 0, "a subtree with no window in it");
+
+    assert!(app.remove(a));
+    assert!(app.remove(b));
+    app.tick();
+    assert!(windows(&app).is_empty());
+    assert!(app.resource::<Windows>().is_empty());
+    assert_eq!(take_windows_changed(), 1, "two removals, one drain");
 }

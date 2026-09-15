@@ -7,7 +7,7 @@ use app::prelude::*;
 use layout::prelude::*;
 
 pub mod prelude {
-    pub use crate::{InWindow, Window, WindowBuilder, WindowModule, window};
+    pub use crate::{InWindow, Window, WindowBuilder, WindowModule, Windows, window};
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +81,7 @@ impl Widget for Window {
         *s.component_mut::<LayoutStyle>(me).unwrap() = b.layout;
         *s.component_mut::<LayoutRoot>(me).unwrap() = LayoutRoot(true);
         *s.component_mut::<InWindow>(me).unwrap() = InWindow(Some(me.id()));
+        s.resource_mut::<Windows>().ids.push(me.id());
         Window {
             title: b.title,
             scale: 1.0,
@@ -100,6 +101,37 @@ pub struct InWindow(pub Option<NodeId>);
 impl Component for InWindow {}
 
 // ---------------------------------------------------------------------------
+// Resource
+// ---------------------------------------------------------------------------
+
+/// Every live window, in spawn order. A window's build pushes it and
+/// `on_removed` drops what is gone, so the list is exact after every
+/// flush. Any tick that changed it fires `OnChanged<Windows>` once.
+#[derive(Debug, Default)]
+pub struct Windows {
+    ids: Vec<NodeId>,
+}
+impl Resource for Windows {}
+
+impl Windows {
+    pub fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.ids.iter().copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.ids.contains(&id)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
 
@@ -109,7 +141,10 @@ pub struct WindowModule;
 
 impl Module for WindowModule {
     fn install(self, app: &mut App) {
-        app.register_component::<InWindow>().system(on_spawned);
+        app.register_component::<InWindow>()
+            .init_resource::<Windows>()
+            .system(on_spawned)
+            .system(on_removed);
     }
 }
 
@@ -138,4 +173,20 @@ fn on_spawned(app: &mut App, s: &Spawned) {
     {
         slot.0 = Some(w);
     }
+}
+
+/// The removed id is stale and may have had windows anywhere under it, so
+/// drop every stale id. The write guard is taken only if something is
+/// stale, so `OnChanged<Windows>` fires only when the list shrank.
+fn on_removed(app: &mut App, _: &Removed) {
+    let any_stale = app.resource::<Windows>().iter().any(|w| !app.is_live(w));
+    if !any_stale {
+        return;
+    }
+    let live: Vec<NodeId> = app
+        .resource::<Windows>()
+        .iter()
+        .filter(|&w| app.is_live(w))
+        .collect();
+    app.resource_mut::<Windows>().ids = live;
 }
