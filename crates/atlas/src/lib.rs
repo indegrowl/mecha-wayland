@@ -12,6 +12,7 @@ pub mod prelude {
     };
 }
 
+mod bitmap;
 mod font;
 mod mip;
 mod page;
@@ -305,6 +306,11 @@ pub enum Error {
     Class,
     /// `insert`: the bitmap cannot fit an empty page of its class.
     TooLarge { width: u32, height: u32, max: u32 },
+    /// The bytes are not a PNG this crate decodes.
+    Png(png::DecodingError),
+    /// The bytes are not an SVG resvg parses.
+    #[cfg(feature = "svg")]
+    Svg(resvg::usvg::Error),
 }
 
 #[cfg(test)]
