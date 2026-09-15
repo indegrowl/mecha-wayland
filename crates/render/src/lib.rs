@@ -22,7 +22,10 @@
 //!   `RequestFrame` for their window; nothing else does, and nothing runs
 //!   on `Tick`. The walk damages a marked node's old and new bounds, a
 //!   removed node's last bounds, and the whole window on the first frame
-//!   or a new size or scale.
+//!   or a new size or scale. A write that lands between the drain and a
+//!   `Frame` is drawn by that frame and, when it moved or resized the
+//!   node, damaged by it too; only a same-bounds change, a colour, is
+//!   damaged one frame late.
 //! - [`Scenes`] keeps the last few frames' damage per window, as many as
 //!   [`RenderModule::buffers`] says. A backend asks [`Scenes::queue`] for
 //!   the buffer it will draw into by its age and gets a [`Queue`]: the

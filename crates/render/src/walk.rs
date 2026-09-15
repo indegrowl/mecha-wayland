@@ -91,9 +91,10 @@ pub(crate) fn hand_down(
 
 /// Preorder over `window`'s subtree. Every visited node takes a z; a
 /// visible paint in a non-empty box emits its commands into `scene`; a
-/// dirty node adds its old and its new bounds to `scene.damage`, one rect
-/// when they coincide; every node that drew is recorded in
-/// `scene.drawing`. Returns how many nodes were visited.
+/// dirty node, or a clean one whose bounds changed since last frame, adds
+/// its old and its new bounds to `scene.damage`, one rect when they
+/// coincide; every node that drew is recorded in `scene.drawing`. Returns
+/// how many nodes were visited.
 pub(crate) fn walk(
     tree: Tree<'_>,
     layouts: &Comps<'_, Layout>,
@@ -140,7 +141,10 @@ pub(crate) fn walk(
             }
         }
         if let Some(mut d) = drawn.get_mut(id) {
-            if d.dirty {
+            // Marked, or moved without a mark: a write that landed after
+            // the last drain is drawn here, so its old pixels are repaired
+            // here too or nothing ever would.
+            if d.dirty || d.rect != bounds {
                 if let Some(old) = d.rect {
                     scene.damage.push(old);
                 }

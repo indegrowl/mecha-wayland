@@ -722,6 +722,35 @@ fn a_hidden_node_damages_its_old_rect_and_draws_nothing() {
 }
 
 #[test]
+fn a_write_after_the_drain_is_drawn_and_damaged_by_the_frame_that_draws_it() {
+    let mut app = app();
+    let (win, a, _) = two_quads(&mut app);
+
+    // A `Layout` written between the drain and the frame: nothing marked
+    // the node, yet the frame draws it at its new bounds.
+    let moved = Rect::new(0.0, 0.0, 60.0, 20.0);
+    app.component_mut::<Layout>(a).unwrap().rect = moved;
+    frame(&mut app, win.id());
+    assert_eq!(
+        queue(&mut app, win.id(), 1).scissor,
+        vec![A_RECT, moved],
+        "old and new, though nothing marked it"
+    );
+
+    app.tick();
+    assert_eq!(
+        take_requested(),
+        vec![win.id()],
+        "the drain notes the write and asks for a frame"
+    );
+    assert_eq!(
+        queue(&mut app, win.id(), 1).scissor,
+        vec![moved],
+        "the late mark finds the rect already current"
+    );
+}
+
+#[test]
 fn a_clean_frame_has_nothing_to_do_and_a_clean_tick_asks_for_nothing() {
     let mut app = app();
     let (win, _, _) = two_quads(&mut app);
