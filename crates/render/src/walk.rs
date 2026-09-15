@@ -185,16 +185,21 @@ fn emit_quad(
     let inside = solid.is_some_and(|s| rect::contains(s.rect, r));
     let radii = q.radii.map(|v| v * scale);
     let border = q.border.map(|v| v * scale);
-    let edge_free = q.radii.is_zero() && !border_visible(q);
+    let visible = border_visible(q);
+    let edge_free = q.radii.is_zero() && !visible;
+    // The interior keeps the unfiltered widths: an invisible border still
+    // says how far in the fill is flat.
     let inner = interior(r, radii, border);
+    // `border_color == color` and no width is how a command says it has no
+    // border, so a shader compositing the ring paints the fill there.
     let base = Command {
         rect: r,
         z,
         color: q.color,
-        border_color: q.border_color,
+        border_color: if visible { q.border_color } else { q.color },
         background: Color::TRANSPARENT,
         radii,
-        border,
+        border: if visible { border } else { Insets::all(0.0) },
         tile: NO_TILE,
         flags: Command::pack(Command::QUAD, false, false, 1.0),
     };

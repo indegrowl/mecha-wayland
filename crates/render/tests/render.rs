@@ -324,6 +324,48 @@ fn inside_a_solid_a_quad_is_one_opaque_command_whatever_its_edges_or_alpha() {
     assert!(half.is_opaque());
 }
 
+#[test]
+fn a_borderless_quad_carries_its_fill_as_border_colour_and_zero_widths() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    // Widths with no colour: nothing a renderer would draw.
+    app.spawn_with(
+        win,
+        Leaf,
+        (
+            boxed(50.0, 20.0),
+            Paint::Quad(Quad::new(RED).border_widths(Insets::all(2.0))),
+        ),
+    );
+    app.spawn_with(
+        win,
+        Leaf,
+        (
+            boxed(50.0, 20.0),
+            Paint::Quad(Quad::new(RED).border(2.0, BLUE)),
+        ),
+    );
+    app.tick();
+
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(
+        zs(&q.opaque.commands),
+        vec![4.0, 2.0],
+        "the bordered, then the borderless"
+    );
+    let bare = q.opaque.commands[1];
+    assert_eq!(
+        (bare.color, bare.border_color),
+        (RED, RED),
+        "no border: the fill is the border colour"
+    );
+    assert_eq!(bare.border, Insets::all(0.0), "and no width either");
+    assert_eq!(bare.background, Color::BLACK);
+    let ringed = q.opaque.commands[0];
+    assert_eq!((ringed.color, ringed.border_color), (RED, BLUE));
+    assert_eq!(ringed.border, Insets::all(2.0), "a visible border is kept");
+}
+
 // ── 4: sprites ──────────────────────────────────────────────────────────
 
 /// A red panel with 4 of padding under `win`, and a text node inside it
