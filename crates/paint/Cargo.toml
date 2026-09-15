@@ -6,6 +6,3 @@ edition = "2024"
 [dependencies]
 app.workspace = true
 geometry.workspace = true
-
-[lints.cargo]
-unused_dependencies = "allow"

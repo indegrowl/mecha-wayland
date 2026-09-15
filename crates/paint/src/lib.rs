@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
+#![allow(unused_imports)]
 //! The paint module: what a node looks like, held as one [`Paint`] per
 //! node. Crate docs are completed in a later task.
 
+use app;
 use geometry::{Color, Corners, Insets, Point, Rect, Size};
 
 /// Which atlas a tile is in. A placeholder: an empty struct, so that a
