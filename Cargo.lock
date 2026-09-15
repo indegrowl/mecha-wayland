@@ -249,8 +249,10 @@ dependencies = [
  "proc-macro2",
  "quick-xml",
  "quote",
+ "ring",
  "serde",
  "syn 2.0.119",
+ "wayland",
 ]
 
 [[package]]

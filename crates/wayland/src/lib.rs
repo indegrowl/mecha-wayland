@@ -2,11 +2,16 @@
 //! The Wayland client as a resource. Crate docs are completed in Task 6.
 
 use std::collections::{HashMap, VecDeque};
+use std::mem;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use app::prelude::*;
+use ring::prelude::*;
+
+#[cfg(feature = "fake")]
+pub mod fake;
 
 pub mod display;
 pub mod generated;
@@ -64,6 +69,12 @@ pub struct Wayland {
     objects: Vec<Option<Object>>,
     server: HashMap<u32, Object>,
     free: Vec<u32>,
+    sending: Option<Token>,
+    reading: Option<Token>,
+    inbox: Vec<u8>,
+    in_fds: VecDeque<OwnedFd>,
+    pub(crate) synced: bool,
+    pub(crate) sync: Option<WlCallback>,
 }
 impl Resource for Wayland {}
 
@@ -81,6 +92,12 @@ impl Wayland {
             objects: vec![None, Some(display)],
             server: HashMap::new(),
             free: Vec::new(),
+            sending: None,
+            reading: None,
+            inbox: Vec::new(),
+            in_fds: VecDeque::new(),
+            synced: false,
+            sync: None,
         }
     }
 
@@ -184,8 +201,286 @@ impl Wayland {
 
     /// Whether requests are buffered and not yet sent.
     pub fn has_pending(&self) -> bool {
-        !self.out.is_empty()
+        !self.out.is_empty() || self.sending.is_some()
     }
+
+    /// Arm the one receive. `buf` should have 64 KiB of capacity; it is
+    /// the buffer the last read gave back.
+    pub fn arm_read(&mut self, ring: &mut Ring, buf: Vec<u8>) {
+        debug_assert!(self.reading.is_none(), "wayland: a read is already armed");
+        self.reading = Some(ring.recvmsg(self.fd.as_fd(), buf, 28));
+    }
+
+    /// Send what is buffered, if nothing is in flight.
+    pub fn flush(&mut self, ring: &mut Ring) {
+        if self.out.is_empty() || self.sending.is_some() {
+            return;
+        }
+        let buf = mem::take(&mut self.out);
+        let fds = mem::take(&mut self.out_fds);
+        self.sending = Some(ring.sendmsg(self.fd.as_fd(), buf, fds));
+    }
+}
+
+pub(crate) fn on_before_wait(app: &mut App, _: &BeforeWait) {
+    let (mut wl, mut ring) = app.query::<(ResMut<Wayland>, ResMut<Ring>)>();
+    wl.flush(&mut ring);
+}
+
+enum Io {
+    Read,
+    Send,
+}
+
+pub(crate) fn on_io(app: &mut App, e: &IoEvent) {
+    let io = {
+        let wl = app.resource::<Wayland>();
+        if wl.reading == Some(e.token) {
+            Io::Read
+        } else if wl.sending == Some(e.token) {
+            Io::Send
+        } else {
+            return;
+        }
+    };
+    let done = app
+        .resource_mut::<Ring>()
+        .finish(e.token)
+        .expect("wayland: a completed op is finishable");
+    match io {
+        Io::Send => {
+            assert!(e.result >= 0, "wayland: send failed, errno {}", -e.result);
+            let sent = e.result as usize;
+            let mut wl = app.resource_mut::<Wayland>();
+            wl.sending = None;
+            if sent < done.buf.len() {
+                let mut tail = done.buf[sent..].to_vec();
+                tail.append(&mut wl.out);
+                wl.out = tail;
+            }
+        }
+        Io::Read => {
+            assert!(
+                e.result > 0,
+                "wayland: the compositor went away (read returned {})",
+                e.result
+            );
+            let (mut bytes, mut fds) = {
+                let (mut wl, mut ring) = app.query::<(ResMut<Wayland>, ResMut<Ring>)>();
+                wl.reading = None;
+                wl.inbox.extend_from_slice(&done.buf);
+                wl.in_fds.extend(done.fds);
+                wl.arm_read(&mut ring, done.buf);
+                (mem::take(&mut wl.inbox), mem::take(&mut wl.in_fds))
+            };
+            let consumed = dispatch_all(app, &bytes, &mut fds);
+            bytes.drain(..consumed);
+            let mut wl = app.resource_mut::<Wayland>();
+            wl.inbox = bytes;
+            wl.in_fds = fds;
+        }
+    }
+}
+
+/// Signal every complete message in `bytes`, in order; return how many
+/// bytes were consumed. A message for an object the table does not know
+/// is skipped whole.
+fn dispatch_all(app: &mut App, bytes: &[u8], fds: &mut VecDeque<OwnedFd>) -> usize {
+    let mut o = 0;
+    while let Some(h) = wire::header(&bytes[o..]) {
+        assert!(
+            h.size >= wire::HEADER,
+            "wayland: a message shorter than its header"
+        );
+        if o + h.size > bytes.len() {
+            break;
+        }
+        let body = &bytes[o + wire::HEADER..o + h.size];
+        if let Some((info, _)) = app.resource::<Wayland>().info(h.sender) {
+            (info.dispatch)(app, h.sender, h.opcode, body, fds);
+        }
+        o += h.size;
+    }
+    o
+}
+
+pub(crate) fn on_display(app: &mut App, e: &WlDisplayEvent) {
+    match e {
+        WlDisplayEvent::Error {
+            object_id,
+            code,
+            message,
+            ..
+        } => panic!("wl_display error on {object_id:?} code {code}: {message}"),
+        WlDisplayEvent::DeleteId { id, .. } => app.resource_mut::<Wayland>().free(ObjectId(*id)),
+    }
+}
+
+pub(crate) fn on_callback(app: &mut App, e: &WlCallbackEvent) {
+    let WlCallbackEvent::Done { callback, .. } = e;
+    let mut wl = app.resource_mut::<Wayland>();
+    if wl.sync == Some(*callback) {
+        wl.sync = None;
+        wl.synced = true;
+    }
+}
+
+/// One advertised global.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Global {
+    pub name: u32,
+    pub interface: String,
+    pub version: u32,
+}
+
+/// The registry and every global it currently advertises, exact after
+/// every flush. Singletons named on [`WaylandModule::bind`] are bound at
+/// install and inserted as resources; anything else is bound here.
+pub struct Globals {
+    registry: WlRegistry,
+    list: Vec<Global>,
+}
+impl Resource for Globals {}
+
+impl Globals {
+    pub fn registry(&self) -> WlRegistry {
+        self.registry
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Global> {
+        self.list.iter()
+    }
+    /// The first advertised global of that interface.
+    pub fn find(&self, interface: &str) -> Option<&Global> {
+        self.list.iter().find(|g| g.interface == interface)
+    }
+    /// Bind `global` as `I`, at the lesser of its version and `I::VERSION`.
+    pub fn bind<I: Interface>(&self, global: &Global, wl: &mut Wayland) -> I {
+        debug_assert_eq!(global.interface, I::NAME);
+        self.registry
+            .bind::<I>(wl, global.name, global.version.min(I::VERSION))
+    }
+}
+
+pub(crate) fn on_registry(app: &mut App, e: &WlRegistryEvent) {
+    let mut globals = app.resource_mut::<Globals>();
+    match e {
+        WlRegistryEvent::Global {
+            name,
+            interface,
+            version,
+            ..
+        } => globals.list.push(Global {
+            name: *name,
+            interface: interface.clone(),
+            version: *version,
+        }),
+        WlRegistryEvent::GlobalRemove { name, .. } => globals.list.retain(|g| g.name != *name),
+    }
+}
+
+type Bind = Box<dyn FnOnce(&mut App)>;
+
+/// Connects, binds the named singletons after a blocking sync, and keeps
+/// the registry followed. Installs after `RingModule`.
+pub struct WaylandModule {
+    stream: Option<UnixStream>,
+    binds: Vec<Bind>,
+}
+
+impl Default for WaylandModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WaylandModule {
+    /// Connect with [`Wayland::connect`] at install.
+    pub fn new() -> Self {
+        WaylandModule {
+            stream: None,
+            binds: Vec::new(),
+        }
+    }
+
+    /// Or over this stream: a test's socketpair.
+    pub fn over(stream: UnixStream) -> Self {
+        WaylandModule {
+            stream: Some(stream),
+            binds: Vec::new(),
+        }
+    }
+
+    /// A singleton global to bind at install and keep as the resource
+    /// `I`. Bound in the order named, at the lesser of the advertised
+    /// and the XML version.
+    ///
+    /// # Panics
+    ///
+    /// At install, if the compositor does not advertise `I::NAME`.
+    pub fn bind<I: Interface + Resource>(mut self) -> Self {
+        self.binds.push(Box::new(|app: &mut App| {
+            let global = app
+                .resource::<Globals>()
+                .find(I::NAME)
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("wayland: the compositor does not advertise {}", I::NAME)
+                });
+            let object: I = {
+                let (globals, mut wl) = app.query::<(Res<Globals>, ResMut<Wayland>)>();
+                globals.bind::<I>(&global, &mut wl)
+            };
+            app.insert_resource(object);
+        }));
+        self
+    }
+}
+
+impl Module for WaylandModule {
+    fn install(self, app: &mut App) {
+        let mut wl = match self.stream {
+            Some(stream) => Wayland::over(stream),
+            None => Wayland::connect(),
+        };
+        app.system(on_before_wait)
+            .system(on_io)
+            .system(on_display)
+            .system(on_callback)
+            .system(on_registry);
+        let display = wl.display();
+        let registry = display.get_registry(&mut wl);
+        wl.sync = Some(display.sync(&mut wl));
+        wl.arm_read(
+            &mut app.resource_mut::<Ring>(),
+            Vec::with_capacity(64 * 1024),
+        );
+        app.insert_resource(wl);
+        app.insert_resource(Globals {
+            registry,
+            list: Vec::new(),
+        });
+        while !app.resource::<Wayland>().synced {
+            Ring::turn(app);
+        }
+        for bind in self.binds {
+            bind(app);
+        }
+        // The binds above only buffer requests; send them now rather than
+        // leaving them for the next `BeforeWait`, so a bound global is
+        // usable (and its bind visible on the wire) the moment `install`
+        // returns.
+        if app.resource::<Wayland>().has_pending() {
+            Ring::turn(app);
+        }
+    }
+}
+
+pub mod prelude {
+    pub use crate::display::{
+        WlCallback, WlCallbackEvent, WlDisplay, WlDisplayEvent, WlRegistry, WlRegistryEvent,
+    };
+    pub use crate::generated::*;
+    pub use crate::{Global, Globals, Interface, ObjectId, Wayland, WaylandModule};
 }
 
 #[cfg(test)]

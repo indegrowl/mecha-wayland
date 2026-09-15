@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 app.workspace = true
 bitflags.workspace = true
+ring.workspace = true
 
 [build-dependencies]
 quick-xml = { version = "0.39", features = ["serialize"] }
@@ -14,3 +15,10 @@ quote = "1"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full"] }
 prettyplease = "0.2"
+
+[features]
+## A scripted compositor over a socketpair, for tests.
+fake = []
+
+[dev-dependencies]
+wayland = { path = ".", features = ["fake"] }
