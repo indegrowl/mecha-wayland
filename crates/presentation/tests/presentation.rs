@@ -593,3 +593,69 @@ fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {
         "late events for forgotten objects are skipped"
     );
 }
+
+// ── final review ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_frame_that_reuses_a_buffer_of_the_same_colour_still_attaches_and_commits() {
+    let mut f = fake();
+    let root = f.app.root();
+    let green = Color::rgb(0.0, 1.0, 0.0);
+    let win = f
+        .app
+        .spawn(
+            root,
+            window()
+                .clear(green)
+                .layout(LayoutStyle::default().column()),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(8);
+        w.int(4);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![BUF_A]);
+    let pixels = |f: &Fake| {
+        let s = f.app.resource::<Surfaces>();
+        (s.buffer_pixel(win, 0, 0), s.buffer_pixel(win, 7, 3))
+    };
+    assert_eq!(pixels(&f), (Some(0xff00_ff00), Some(0xff00_ff00)));
+
+    f.app.signal(RequestFrame(win));
+    f.app.flush();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![BUF_B], "the other buffer");
+    assert_eq!(pixels(&f), (Some(0xff00_ff00), Some(0xff00_ff00)));
+
+    f.app.signal(RequestFrame(win));
+    f.app.flush();
+    f.send(CALLBACK + 1, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert!(attaches(&mut f).is_empty(), "both buffers are held");
+
+    // Back to a buffer that already holds this colour: the fill is
+    // skipped, the frame is not.
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    let reqs = f.requests();
+    let shape: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    assert!(shape.contains(&(SURFACE, op::ATTACH)), "{shape:?}");
+    assert!(shape.contains(&(SURFACE, op::COMMIT)), "{shape:?}");
+    let attach = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .unwrap();
+    assert_eq!(attach.reader().object(), Some(ObjectId(BUF_A)));
+    assert_eq!(
+        pixels(&f),
+        (Some(0xff00_ff00), Some(0xff00_ff00)),
+        "the pixels read back unchanged"
+    );
+}
