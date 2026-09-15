@@ -91,6 +91,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "presentation"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "geometry",
+ "layout",
+ "ring",
+ "wayland",
+ "window",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"

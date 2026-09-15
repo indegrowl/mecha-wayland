@@ -1,0 +1,15 @@
+[package]
+name = "presentation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+app.workspace = true
+geometry.workspace = true
+layout.workspace = true
+wayland.workspace = true
+window.workspace = true
+
+[dev-dependencies]
+ring.workspace = true
+wayland = { workspace = true, features = ["fake"] }
