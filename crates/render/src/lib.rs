@@ -15,9 +15,13 @@
 //!   tile onto it and writes depth. An opaque, edge-free quad with an
 //!   opaque colour is a plain fill and goes to the opaque pass wherever
 //!   it is. Anything else with nothing known behind it blends in the
-//!   translucent pass; an opaque quad with edges also writes its flat
-//!   interior as an opaque fill at `z + 1`. Each primitive's `is_opaque`
-//!   in `paint` opts out of the opaque pass.
+//!   translucent pass; an opaque-coloured quad with edges also writes its
+//!   flat interior as an opaque fill at `z + 1`. Each primitive's
+//!   `is_opaque` in `paint` opts out of the opaque pass. The solid is what
+//!   the parent painted; an earlier sibling that blended over it is not
+//!   known, so a later sibling inside the solid composites onto the
+//!   parent's colour and its depth write covers the earlier one where
+//!   their rects overlap.
 //! - `Layout` and `Paint` changes, and removals, mark the nodes and raise
 //!   `RequestFrame` for their window; nothing else does, and nothing runs
 //!   on `Tick`. The walk damages a marked node's old and new bounds, a
