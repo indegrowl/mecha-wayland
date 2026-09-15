@@ -37,19 +37,14 @@
 //! use layout::prelude::*;
 //! use window::prelude::*;
 //!
-//! /// A WSI stand-in: answers every request at once.
-//! fn answer(app: &mut App, r: &FrameRequested) {
-//!     app.signal(Frame(r.0));
-//! }
-//!
 //! let mut app = App::new();
-//! app.add_module(LayoutModule).add_module(WindowModule).system(answer);
+//! app.add_module(LayoutModule).add_module(WindowModule);
 //!
 //! let win = app.spawn(
 //!     app.root(),
 //!     window()
 //!         .title("hello")
-//!         .layout(LayoutStyle::default().size(px(320.0), px(200.0))),
+//!         .layout(LayoutStyle::default().column().size(px(320.0), px(200.0))),
 //! );
 //! app.tick();
 //! assert_eq!(
@@ -59,9 +54,17 @@
 //! assert_eq!(app.resource::<Windows>().len(), 1);
 //!
 //! app.signal(RequestFrame(win.id()));
-//! assert!(!app.widget::<Window>(win).unwrap().is_pending(), "queued, not run");
 //! app.flush();
-//! assert!(!app.widget::<Window>(win).unwrap().is_pending(), "requested, drawn, closed");
+//! assert!(
+//!     app.widget::<Window>(win).unwrap().is_pending(),
+//!     "one FrameRequested went out to the WSI"
+//! );
+//! app.signal(Frame(win.id())); // the WSI's frame callback fired
+//! app.flush();
+//! assert!(
+//!     !app.widget::<Window>(win).unwrap().is_pending(),
+//!     "the cycle is closed"
+//! );
 //! ```
 
 use app::prelude::*;
@@ -82,6 +85,7 @@ pub mod prelude {
 /// A node presented on its own surface. Everything only a window has lives
 /// here: the WSI and the renderer read one window at a time through
 /// `app.widget::<Window>(w)`.
+#[derive(Debug)]
 pub struct Window {
     pub title: String,
     /// The WSI's scale for the window's output; `1.0` until it says.
@@ -114,6 +118,7 @@ pub fn window() -> WindowBuilder {
 
 /// What the spawn site knows about the window: its title and the box it
 /// asks for. No style verbs; a whole `LayoutStyle` is given.
+#[derive(Debug)]
 pub struct WindowBuilder {
     title: String,
     layout: LayoutStyle,
@@ -126,7 +131,9 @@ impl WindowBuilder {
     }
 
     /// The box the window asks for. Its size is a request until the WSI
-    /// answers with `Resized`.
+    /// answers with `Resized`. The given style replaces the default
+    /// entirely, the column included, so a caller who wants a column with
+    /// a size writes `LayoutStyle::default().column().size(..)`.
     pub fn layout(mut self, style: LayoutStyle) -> Self {
         self.layout = style;
         self
@@ -310,7 +317,11 @@ fn on_removed(app: &mut App, _: &Removed) {
 }
 
 /// The first request of a cycle goes to the WSI; the rest wait for its
-/// `Frame`. A stale id or a non-window is skipped.
+/// `Frame`. A stale id or a non-window is skipped. `pending` is set even
+/// when nothing listens for `FrameRequested`: with no WSI installed, the
+/// first `RequestFrame` leaves the window pending forever and later ones
+/// are swallowed, so an app that wants the loop must install something
+/// that answers `FrameRequested`.
 fn on_request_frame(app: &mut App, r: &RequestFrame) {
     let Some(w) = app.widget_mut::<Window>(r.0) else {
         return;
@@ -346,13 +357,9 @@ fn on_resized(ctx: &mut Context<'_, Window>, r: &Resized) {
         r.size
     );
     let (width, height) = (px(r.size.width), px(r.size.height));
-    let same = ctx
-        .component::<LayoutStyle>()
-        .is_some_and(|s| s.width == width && s.height == height);
-    if same {
-        return;
-    }
-    if let Some(mut style) = ctx.component_mut::<LayoutStyle>() {
+    if let Some(mut style) = ctx.component_mut::<LayoutStyle>()
+        && (style.width != width || style.height != height)
+    {
         style.width = width;
         style.height = height;
     }
