@@ -25,7 +25,6 @@ layout = { path = "crates/layout" }
 paint = { path = "crates/paint" }
 render = { path = "crates/render" }
 ring = { path = "crates/ring" }
-wayland = { path = "crates/wayland" }
 window = { path = "crates/window" }
 io-uring = "0.7"
 libc = "0.2"
