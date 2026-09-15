@@ -1,14 +1,16 @@
 //! A window's scene: the full sorted command lists of the last walk, what
-//! that walk drew per node, the damage of the last few frames, and the
-//! reusable queue a backend reads. Nothing here reads a column; the walk
-//! fills it and `queue` filters it.
+//! that walk drew per node, the damage of the last few frames, the stack
+//! the walk descends with, and the reusable queue a backend reads. Every
+//! one of those is a buffer kept between frames, so a steady frame
+//! allocates nothing. Nothing here reads a column; the walk fills it and
+//! `queue` filters it.
 
 use std::collections::VecDeque;
 
 use app::NodeId;
 use geometry::{Color, Rect, Size};
 
-use crate::{Command, Pass, Queue, rect};
+use crate::{Command, Pass, Queue, rect, walk::Solid};
 
 /// Past this many rects a damage list collapses to its bounding rect.
 const MAX_RECTS: usize = 16;
@@ -30,6 +32,9 @@ pub(crate) struct Scene {
     /// This frame's damage as the walk collects it, device pixels, not
     /// yet clamped.
     pub(crate) damage: Vec<Rect>,
+    /// The walk's preorder stack, kept so a frame does not allocate one:
+    /// each node still to visit with the solid behind it.
+    pub(crate) stack: Vec<(NodeId, Option<Solid>)>,
     /// The last `buffers` frames' damage, newest first, each clamped and
     /// collapsed.
     history: VecDeque<Vec<Rect>>,
@@ -51,6 +56,7 @@ impl Scene {
             drawn: Vec::new(),
             drawing: Vec::new(),
             damage: Vec::new(),
+            stack: Vec::new(),
             history: VecDeque::with_capacity(buffers),
             buffers,
             fresh: true,
@@ -76,6 +82,7 @@ impl Scene {
         self.translucent.clear();
         self.drawing.clear();
         self.damage.clear();
+        self.stack.clear();
         full
     }
 

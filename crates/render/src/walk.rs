@@ -109,7 +109,11 @@ pub(crate) fn walk(
         color: clear,
         rect: scene.window_rect(),
     });
-    let mut stack: Vec<(NodeId, Option<Solid>)> = vec![(window, root_solid)];
+    // The scene lends its stack, so a steady frame allocates nothing; the
+    // loop body needs the rest of the scene mutably, hence the take.
+    let mut stack = std::mem::take(&mut scene.stack);
+    stack.clear();
+    stack.push((window, root_solid));
     let mut visited = 0u32;
     while let Some((id, solid)) = stack.pop() {
         let z = 2.0 * visited as f32;
@@ -170,6 +174,7 @@ pub(crate) fn walk(
             }
         }
     }
+    scene.stack = stack;
     visited
 }
 
