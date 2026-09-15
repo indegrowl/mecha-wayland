@@ -7,20 +7,8 @@ use app::prelude::*;
 use layout::prelude::*;
 
 pub mod prelude {
-    pub use crate::{
-        Frame, FrameRequested, InWindow, Window, WindowBuilder, WindowModule, Windows, window,
-    };
+    pub use crate::{InWindow, Window, WindowBuilder, WindowModule, window};
 }
-
-// Placeholder types for signals/resources (will be fully implemented in later tasks)
-pub struct FrameRequested(pub NodeId);
-impl Signal for FrameRequested {}
-
-pub struct Frame(pub NodeId);
-impl Signal for Frame {}
-
-pub struct Windows;
-impl Resource for Windows {}
 
 // ---------------------------------------------------------------------------
 // Widget

@@ -55,6 +55,21 @@ impl Widget for Owner {
     }
 }
 
+// Stand-ins for the names later tasks add to the crate. Each is deleted
+// by the task that adds the real one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameRequested(NodeId);
+impl Signal for FrameRequested {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Frame(NodeId);
+impl Signal for Frame {}
+
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+struct Windows;
+impl Resource for Windows {}
+
 // Systems cannot capture, so the tests log through thread-locals. Each
 // test runs on its own thread, so logs never mix.
 thread_local! {
