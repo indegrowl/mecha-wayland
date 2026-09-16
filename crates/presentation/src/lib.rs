@@ -107,7 +107,7 @@ pub const DEFAULT_SIZE: Size = Size::new(640.0, 480.0);
 
 /// How many slots a window holds. `RenderModule::buffers` must be at
 /// least this, which its default is, for a free slot's scissor to be
-/// exact.
+/// exact; `PresentationModule::install` asserts it.
 pub const BUFFERS: usize = 2;
 
 /// `DRM_FORMAT_MOD_INVALID`: a compositor's way of saying "implicit",
@@ -230,6 +230,11 @@ impl Module for PresentationModule {
                 "presentation: zwp_linux_dmabuf_v1 must be version 3 or above for modifier events"
             );
         }
+        assert!(
+            app.resource::<Scenes>().buffers() >= BUFFERS,
+            "presentation: a window holds {BUFFERS} slots, so a slot can be {BUFFERS} frames old, but render keeps only {} frames of damage: raise RenderModule::buffers to {BUFFERS}",
+            app.resource::<Scenes>().buffers()
+        );
         let device = Device::open(self.budget);
         let layer_shell = app
             .resource::<Globals>()
@@ -604,7 +609,16 @@ fn on_frame(app: &mut App, f: &Frame) {
     if queue.scissor.is_empty() {
         return;
     }
-    if (queue.size.width as u32, queue.size.height as u32) != (slots.width, slots.height) {
+    // Two roundings of the same size must agree: the slots' came from
+    // `device_size`, which rounds the logical size times the scale, and
+    // the queue's is what `render` walked at. Round here too — truncating
+    // would make a fractional device size differ from the slots' forever,
+    // and every frame would decline and want again.
+    let want = (
+        queue.size.width.round() as u32,
+        queue.size.height.round() as u32,
+    );
+    if want != (slots.width, slots.height) {
         // A frame between a configure and the layout that follows it:
         // the layout's change requests the frame that fits.
         entry.wanting = true;

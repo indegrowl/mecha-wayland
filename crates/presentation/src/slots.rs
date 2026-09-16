@@ -5,6 +5,8 @@
 use gles::{Device, Target};
 use wayland::prelude::*;
 
+use crate::BUFFERS;
+
 pub(crate) struct Slot {
     pub(crate) target: Target,
     pub(crate) buffer: WlBuffer,
@@ -18,7 +20,7 @@ pub(crate) struct Slot {
 pub(crate) struct Slots {
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) slots: [Slot; 2],
+    pub(crate) slots: [Slot; BUFFERS],
 }
 
 fn slot(
@@ -60,7 +62,7 @@ fn slot(
 }
 
 impl Slots {
-    /// Two slots of `width` by `height` device pixels, laid out by the
+    /// [`BUFFERS`] slots of `width` by `height` device pixels, laid out by the
     /// first of `modifiers` the GPU accepts, linear when the list is
     /// empty.
     pub(crate) fn create(
@@ -74,10 +76,7 @@ impl Slots {
         Slots {
             width,
             height,
-            slots: [
-                slot(device, wl, dmabuf, modifiers, width, height),
-                slot(device, wl, dmabuf, modifiers, width, height),
-            ],
+            slots: std::array::from_fn(|_| slot(device, wl, dmabuf, modifiers, width, height)),
         }
     }
 

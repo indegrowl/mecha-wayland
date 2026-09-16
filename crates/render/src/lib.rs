@@ -286,6 +286,12 @@ impl Scenes {
             .map(|(_, s)| s.queue(age))
     }
 
+    /// How many buffers a backend said it holds per window, and so how
+    /// many frames of damage each scene keeps. [`RenderModule::buffers`].
+    pub fn buffers(&self) -> usize {
+        self.buffers
+    }
+
     pub(crate) fn has(&self, window: NodeId) -> bool {
         self.scenes.iter().any(|(w, _)| *w == window)
     }
