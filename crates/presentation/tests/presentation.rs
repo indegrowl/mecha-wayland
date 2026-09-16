@@ -52,7 +52,6 @@ mod op {
     /// Both a buffer's and a target's teardown; used by the scale test
     /// here and by the removal test (Task 7).
     pub const BUFFER_DESTROY: u16 = 0;
-    #[allow(dead_code)]
     pub const SURFACE_DESTROY: u16 = 0;
     pub const ATTACH: u16 = 1;
     pub const FRAME: u16 = 3;
@@ -61,11 +60,9 @@ mod op {
     pub const DAMAGE_BUFFER: u16 = 9;
     pub const GET_XDG_SURFACE: u16 = 2;
     pub const PONG: u16 = 3;
-    #[allow(dead_code)]
     pub const XDG_DESTROY: u16 = 0;
     pub const GET_TOPLEVEL: u16 = 1;
     pub const ACK_CONFIGURE: u16 = 4;
-    #[allow(dead_code)]
     pub const TOPLEVEL_DESTROY: u16 = 0;
     pub const SET_TITLE: u16 = 2;
     pub const SET_APP_ID: u16 = 3;
