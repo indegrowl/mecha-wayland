@@ -112,6 +112,7 @@ fn an_empty_scissor_draws_nothing() {
     );
     d.draw(&t, &queue(8.0, 8.0, Color::rgb(1.0, 1.0, 1.0), vec![]));
     let px = d.read(&t);
+    png("an_empty_scissor_draws_nothing", 8, 8, &px);
     assert_eq!(pixel(&px, 8, 4, 4), rgb(0.0, 0.0, 1.0));
     d.destroy(t);
 }
