@@ -1,0 +1,288 @@
+mod common;
+
+use atlas::{Atlas, AtlasId, AtlasTile, Bitmap, Class, Format};
+use common::{device, near, pixel, png, rgb};
+use geometry::{Color, Corners, Insets, Rect, Size};
+use gles::{Budget, Device};
+use render::{Command, Pass, Queue};
+
+const INTER: &[u8] = include_bytes!("../../atlas/tests/fixtures/Inter-Regular.ttf");
+
+fn queue(w: f32, h: f32, clear: Color) -> Queue {
+    Queue {
+        size: Size::new(w, h),
+        scale: 1.0,
+        clear,
+        depth: 2.0,
+        scissor: vec![Rect::new(0.0, 0.0, w, h)],
+        opaque: Pass::default(),
+        translucent: Pass::default(),
+    }
+}
+
+fn sprite(rect: Rect, tile: AtlasTile, color: Color, background: Option<Color>) -> Command {
+    Command {
+        rect,
+        z: 0.0,
+        color,
+        border_color: color,
+        background: background.unwrap_or(Color::TRANSPARENT),
+        radii: Corners::all(0.0),
+        border: Insets::all(0.0),
+        tile,
+        flags: Command::pack(Command::SPRITE, background.is_some(), false, 1.0),
+    }
+}
+
+fn image(rect: Rect, tile: AtlasTile, grayscale: bool, opacity: f32) -> Command {
+    Command {
+        rect,
+        z: 0.0,
+        color: Color::WHITE,
+        border_color: Color::WHITE,
+        background: Color::TRANSPARENT,
+        radii: Corners::all(0.0),
+        border: Insets::all(0.0),
+        tile,
+        flags: Command::pack(Command::IMAGE, false, grayscale, opacity),
+    }
+}
+
+/// A 32 by 32 opaque image: left half red, right half green.
+fn halves() -> Bitmap {
+    let mut pixels = Vec::with_capacity(32 * 32 * 4);
+    for _y in 0..32 {
+        for x in 0..32 {
+            let (r, g) = if x < 16 { (255, 0) } else { (0, 255) };
+            pixels.extend_from_slice(&[r, g, 0, 255]);
+        }
+    }
+    Bitmap {
+        width: 32,
+        height: 32,
+        format: Format::Rgba8,
+        pixels,
+    }
+}
+
+fn draw_one(d: &mut Device, w: u32, h: u32, q: &Queue, name: &str) -> Vec<u8> {
+    let t = d.target(w, h, &[]);
+    d.draw(&t, q);
+    let px = d.read(&t);
+    png(name, w, h, &px);
+    d.destroy(t);
+    px
+}
+
+#[test]
+fn a_glyph_sprite_renders_its_coverage_tinted() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+    let g = atlas.glyph(font, id, 40);
+    d.upload(&atlas);
+    let (w, h) = (g.tile.bounds.width(), g.tile.bounds.height());
+    assert!(w > 10.0 && h > 10.0, "a 40 px 'a' has ink: {w}x{h}");
+
+    // Blended: white tint over black, the tile at (4, 4).
+    let mut q = queue(64.0, 64.0, Color::BLACK);
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![sprite(
+            Rect::new(4.0, 4.0, w, h),
+            g.tile,
+            Color::WHITE,
+            None,
+        )],
+    };
+    let px = draw_one(
+        &mut d,
+        64,
+        64,
+        &q,
+        "a_glyph_sprite_renders_its_coverage_tinted",
+    );
+    let mut brightest = 0u8;
+    for y in 4..(4 + h as u32) {
+        for x in 4..(4 + w as u32) {
+            brightest = brightest.max(pixel(&px, 64, x, y)[0]);
+        }
+    }
+    assert!(
+        brightest > 200,
+        "some pixel of the glyph is near white: {brightest}"
+    );
+    assert_eq!(
+        pixel(&px, 64, 60, 60),
+        rgb(0.0, 0.0, 0.0),
+        "outside the tile stays black"
+    );
+    assert_eq!(
+        pixel(&px, 64, 4, 4),
+        rgb(0.0, 0.0, 0.0),
+        "the tile's corner is empty"
+    );
+
+    // Opaque: black tint composited onto white.
+    let mut q = queue(64.0, 64.0, Color::WHITE);
+    q.opaque = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![sprite(
+            Rect::new(4.0, 4.0, w, h),
+            g.tile,
+            Color::BLACK,
+            Some(Color::WHITE),
+        )],
+    };
+    let px = draw_one(
+        &mut d,
+        64,
+        64,
+        &q,
+        "a_glyph_sprite_renders_its_coverage_tinted.opaque",
+    );
+    let mut darkest = 255u8;
+    for y in 4..(4 + h as u32) {
+        for x in 4..(4 + w as u32) {
+            darkest = darkest.min(pixel(&px, 64, x, y)[0]);
+        }
+    }
+    assert!(
+        darkest < 60,
+        "some pixel of the glyph is near black: {darkest}"
+    );
+    assert_eq!(pixel(&px, 64, 60, 60), rgb(1.0, 1.0, 1.0));
+}
+
+#[test]
+fn an_image_renders_at_its_size_and_at_half_size_through_its_mips() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let id = atlas.insert(Class::Image, &halves()).unwrap();
+    let tile = atlas.sprite(id).tile;
+    d.upload(&atlas);
+
+    let mut q = queue(48.0, 48.0, Color::BLACK);
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![
+            image(Rect::new(0.0, 0.0, 32.0, 32.0), tile, false, 1.0),
+            image(Rect::new(32.0, 0.0, 16.0, 16.0), tile, false, 1.0),
+            image(Rect::new(0.0, 32.0, 16.0, 16.0), tile, true, 1.0),
+            image(Rect::new(16.0, 32.0, 16.0, 16.0), tile, false, 0.5),
+        ],
+    };
+    let px = draw_one(
+        &mut d,
+        48,
+        48,
+        &q,
+        "an_image_renders_at_its_size_and_at_half_size_through_its_mips",
+    );
+    assert!(
+        near(pixel(&px, 48, 4, 16), rgb(1.0, 0.0, 0.0), 2),
+        "full size, left half red"
+    );
+    assert!(
+        near(pixel(&px, 48, 27, 16), rgb(0.0, 1.0, 0.0), 2),
+        "full size, right half green"
+    );
+    assert!(
+        near(pixel(&px, 48, 34, 8), rgb(1.0, 0.0, 0.0), 8),
+        "half size, left half red"
+    );
+    assert!(
+        near(pixel(&px, 48, 45, 8), rgb(0.0, 1.0, 0.0), 8),
+        "half size, right half green"
+    );
+    let g = pixel(&px, 48, 2, 40);
+    assert!(g[0] == g[1] && g[1] == g[2], "grayscale is grey: {g:?}");
+    assert!(g[0] > 30 && g[0] < 90, "luma of pure red: {g:?}");
+    assert!(
+        near(pixel(&px, 48, 18, 40), rgb(0.5, 0.0, 0.0), 3),
+        "half opacity over black"
+    );
+}
+
+#[test]
+fn dirty_cells_go_up_as_row_runs() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let strip = Bitmap {
+        width: 200,
+        height: 8,
+        format: Format::Rgba8,
+        pixels: vec![200; 200 * 8 * 4],
+    };
+    atlas.insert(Class::Image, &strip).unwrap();
+    d.upload(&atlas);
+    // A new page: every cell dirty, 16 rows, one run a row, five levels.
+    assert_eq!(d.upload_calls(), 16 * 5);
+    // A second strip lands beside the first on the same shelf: one run of
+    // cells in row 0, five levels.
+    atlas.insert(Class::Image, &strip).unwrap();
+    d.upload(&atlas);
+    assert_eq!(d.upload_calls(), 16 * 5 + 5);
+    // Nothing dirty: nothing uploaded.
+    d.upload(&atlas);
+    assert_eq!(d.upload_calls(), 16 * 5 + 5);
+}
+
+#[test]
+fn a_page_past_the_budget_panics_with_the_class_named() {
+    let Some((_g, _d)) = device() else { return };
+    drop(_d);
+    let mut d = Device::try_open(Budget {
+        mono_pages: 1,
+        color_pages: 1,
+    })
+    .unwrap();
+    let mut atlas = Atlas::new();
+    let big = Bitmap {
+        width: 600,
+        height: 600,
+        format: Format::Rgba8,
+        pixels: vec![10; 600 * 600 * 4],
+    };
+    atlas.insert(Class::Image, &big).unwrap();
+    atlas.insert(Class::Image, &big).unwrap();
+    assert!(
+        atlas.pages().count() >= 2,
+        "two 600 px images need two pages"
+    );
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.upload(&atlas)));
+    let msg = r.unwrap_err();
+    let msg = msg
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| msg.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default();
+    assert!(msg.contains("color atlas budget of 1"), "{msg}");
+}
+
+#[test]
+fn a_page_id_is_looked_up_even_when_pages_of_both_kinds_interleave() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    atlas.warm(inter, 14, 'a'..='c'); // mono page, id 0
+    let img = atlas.insert(Class::Image, &halves()).unwrap(); // color page, id 1
+    d.upload(&atlas);
+    let tile = atlas.sprite(img).tile;
+    assert_eq!(tile.atlas, AtlasId(1));
+    let mut q = queue(32.0, 32.0, Color::BLACK);
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![image(Rect::new(0.0, 0.0, 32.0, 32.0), tile, false, 1.0)],
+    };
+    let px = draw_one(
+        &mut d,
+        32,
+        32,
+        &q,
+        "a_page_id_is_looked_up_even_when_pages_of_both_kinds_interleave",
+    );
+    assert!(near(pixel(&px, 32, 4, 16), rgb(1.0, 0.0, 0.0), 2));
+    assert!(near(pixel(&px, 32, 27, 16), rgb(0.0, 1.0, 0.0), 2));
+}

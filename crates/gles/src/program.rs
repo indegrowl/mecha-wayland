@@ -143,9 +143,9 @@ pub(crate) struct Program {
     pub(crate) u_size: Option<glow::UniformLocation>,
     pub(crate) u_depth: Option<glow::UniformLocation>,
     pub(crate) u_opaque: Option<glow::UniformLocation>,
-    /// Written by Task 4, once the atlas has pages to describe; zeroed
-    /// here so an id with no entry maps to class 0, layer 0.
-    #[allow(dead_code)]
+    /// Written by `textures::Textures::upload`, once the atlas has pages
+    /// to describe; zeroed here so an id with no entry maps to class 0,
+    /// layer 0.
     pub(crate) u_page: Option<glow::UniformLocation>,
 }
 

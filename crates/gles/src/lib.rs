@@ -3,10 +3,13 @@
 //! render targets, and the draw of a `render::Queue`. Crate docs are
 //! completed in the last task of the slice.
 
+use glow::HasContext;
+
 mod draw;
 mod egl;
 mod program;
 mod target;
+mod textures;
 
 pub use target::{Plane, Target, XRGB8888};
 
@@ -46,10 +49,15 @@ pub enum Error {
 /// The GPU: one render node, one GBM device, one EGL display and one
 /// GLES 3.0 context, current on the thread that opened it for the
 /// device's life. Not `Send`.
+///
+/// `gpu` is declared last so it drops last: [`Drop for Device`](#impl-Drop-for-Device)
+/// frees the atlas textures and the program's GL objects first, while
+/// the context is still current.
 pub struct Device {
-    gpu: egl::Gpu,
     budget: Budget,
     program: program::Program,
+    textures: textures::Textures,
+    gpu: egl::Gpu,
 }
 
 impl Device {
@@ -58,10 +66,12 @@ impl Device {
     pub fn try_open(budget: Budget) -> Result<Device, Error> {
         let gpu = egl::Gpu::open()?;
         let program = program::Program::new(&gpu);
+        let textures = textures::Textures::new(&gpu, budget);
         Ok(Device {
             gpu,
             budget,
             program,
+            textures,
         })
     }
 
@@ -101,14 +111,57 @@ impl Device {
         target::read(&self.gpu, target)
     }
 
+    /// Uploads what changed in the atlas: new pages get a layer, dirty
+    /// cells go up as runs. Takes `&Atlas`, so the drain is not a write.
+    pub fn upload(&mut self, atlas: &atlas::Atlas) {
+        self.textures.upload(&self.gpu, &self.program, atlas);
+    }
+
+    /// How many sub-image uploads `upload` has issued so far. For tests.
+    pub fn upload_calls(&self) -> u64 {
+        self.textures.calls
+    }
+
     /// Executes one queue on one target: the clears, the opaque pass,
     /// the translucent pass, a flush. An empty scissor does nothing.
     pub fn draw(&mut self, target: &Target, queue: &render::Queue) {
         if queue.scissor.is_empty() {
             return;
         }
+        #[cfg(debug_assertions)]
+        for c in q_commands(queue) {
+            if c.kind() != render::Command::QUAD {
+                debug_assert!(
+                    self.textures.has(c.tile.atlas),
+                    "gles: atlas page {:?} is sampled before it was uploaded",
+                    c.tile.atlas
+                );
+            }
+        }
         draw::clear(&self.gpu, target, queue);
         draw::passes(&self.gpu, &self.program, target, queue);
         draw::finish(&self.gpu);
+    }
+}
+
+#[cfg(debug_assertions)]
+fn q_commands(q: &render::Queue) -> impl Iterator<Item = &render::Command> {
+    q.opaque
+        .commands
+        .iter()
+        .chain(q.translucent.commands.iter())
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        self.textures.drop_with(&self.gpu);
+        #[allow(unsafe_code)]
+        // SAFETY: objects this crate made; the context is still current
+        // and `gpu` has not dropped yet, as it is the struct's last field.
+        unsafe {
+            self.gpu.gl.delete_program(self.program.program);
+            self.gpu.gl.delete_vertex_array(self.program.vao);
+            self.gpu.gl.delete_buffer(self.program.vbo);
+        }
     }
 }

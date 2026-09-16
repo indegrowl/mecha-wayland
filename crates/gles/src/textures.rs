@@ -1,0 +1,244 @@
+//! The atlas on the GPU: two array textures allocated once at open and
+//! never rebound, the page table that maps an `AtlasId` to its array and
+//! layer, and the upload of dirty cells in row runs.
+#![allow(unsafe_code)]
+
+use atlas::{Atlas, AtlasId, CELL, Class, PAGE, Page};
+use glow::HasContext;
+
+use crate::Budget;
+use crate::egl::Gpu;
+use crate::program::Program;
+
+/// Levels every layer has; glyph layers fill only the first.
+const LEVELS: i32 = 5;
+/// Ids the uniform table holds: `ivec4 u_page[64]`.
+const TABLE: usize = 256;
+
+#[derive(Clone, Copy)]
+enum Array {
+    Mono,
+    Color,
+}
+
+pub(crate) struct Textures {
+    mono: glow::Texture,
+    color: glow::Texture,
+    budget: Budget,
+    mono_used: u32,
+    color_used: u32,
+    /// By `AtlasId`: the class and layer of a page that has a layer.
+    pages: Vec<Option<(Class, u32)>>,
+    /// `class << 8 | layer` per id, mirrored into `u_page`.
+    table: [i32; TABLE],
+    /// Sub-image uploads issued so far. For tests.
+    pub(crate) calls: u64,
+}
+
+/// A run of contiguous dirty cells in one row of one page.
+///
+/// `drain_dirty` hands the closure `&Page` under a higher-ranked bound
+/// (`for<'r> FnMut(&'r Page, Cell)`, since the signature elides the
+/// lifetime): the reference is only valid for that one call, so it
+/// cannot sit in a variable that survives to the next call. `page` is
+/// kept as a raw pointer instead, valid for as long as `upload`'s
+/// `&Atlas` borrow lives: `drain_dirty` only reads, so no page moves or
+/// frees while it runs.
+struct Run {
+    page: *const Page,
+    layer: u32,
+    row: u8,
+    col: u8,
+    count: u8,
+}
+
+fn array_of(class: Class) -> Array {
+    match class {
+        Class::Glyph | Class::Icon => Array::Mono,
+        Class::Image => Array::Color,
+        Class::External => unreachable!("externals have no page"),
+    }
+}
+
+impl Textures {
+    pub(crate) fn new(gpu: &Gpu, budget: Budget) -> Textures {
+        let gl = &gpu.gl;
+        let make = |unit: u32, internal: u32, layers: u32| {
+            // SAFETY: the context is current.
+            unsafe {
+                let t = gl.create_texture().expect("glGenTextures");
+                gl.active_texture(glow::TEXTURE0 + unit);
+                gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(t));
+                gl.tex_storage_3d(
+                    glow::TEXTURE_2D_ARRAY,
+                    LEVELS,
+                    internal,
+                    PAGE as i32,
+                    PAGE as i32,
+                    layers.max(1) as i32,
+                );
+                let p = |k, v| gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, k, v);
+                p(glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+                p(glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                p(glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+                p(glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+                p(glow::TEXTURE_MAX_LEVEL, LEVELS - 1);
+                t
+            }
+        };
+        let mono = make(0, glow::R8, budget.mono_pages);
+        let color = make(1, glow::RGBA8, budget.color_pages);
+        Textures {
+            mono,
+            color,
+            budget,
+            mono_used: 0,
+            color_used: 0,
+            pages: Vec::new(),
+            table: [0; TABLE],
+            calls: 0,
+        }
+    }
+
+    pub(crate) fn has(&self, id: AtlasId) -> bool {
+        self.pages.get(id.0 as usize).is_some_and(|p| p.is_some())
+    }
+
+    /// New pages get a layer; then every dirty cell goes up in runs.
+    pub(crate) fn upload(&mut self, gpu: &Gpu, program: &Program, atlas: &Atlas) {
+        let mut added = false;
+        for page in atlas.pages() {
+            if self.has(page.id()) {
+                continue;
+            }
+            let id = page.id().0 as usize;
+            assert!(
+                id < TABLE,
+                "gles: atlas id {id} is past the page table of {TABLE}"
+            );
+            let layer = match array_of(page.class()) {
+                Array::Mono => {
+                    assert!(
+                        self.mono_used < self.budget.mono_pages,
+                        "gles: the mono atlas budget of {} pages is spent by a {:?} page; raise Budget::mono_pages",
+                        self.budget.mono_pages,
+                        page.class()
+                    );
+                    self.mono_used += 1;
+                    self.mono_used - 1
+                }
+                Array::Color => {
+                    assert!(
+                        self.color_used < self.budget.color_pages,
+                        "gles: the color atlas budget of {} pages is spent by a {:?} page; raise Budget::color_pages",
+                        self.budget.color_pages,
+                        page.class()
+                    );
+                    self.color_used += 1;
+                    self.color_used - 1
+                }
+            };
+            if self.pages.len() <= id {
+                self.pages.resize(id + 1, None);
+            }
+            self.pages[id] = Some((page.class(), layer));
+            self.table[id] = ((page.class() as i32) << 8) | layer as i32;
+            added = true;
+        }
+        if added {
+            // SAFETY: the program is the device's.
+            unsafe {
+                gpu.gl.use_program(Some(program.program));
+                gpu.gl
+                    .uniform_4_i32_slice(program.u_page.as_ref(), &self.table);
+            }
+        }
+
+        let mut run: Option<Run> = None;
+        atlas.drain_dirty(|page, cell| {
+            let ptr = page as *const Page;
+            let layer = self.pages[page.id().0 as usize]
+                .expect("every page has a layer")
+                .1;
+            match &mut run {
+                Some(r) if r.page == ptr && r.row == cell.row && r.col + r.count == cell.col => {
+                    r.count += 1;
+                }
+                _ => {
+                    if let Some(r) = run.take() {
+                        self.flush(gpu, r);
+                    }
+                    run = Some(Run {
+                        page: ptr,
+                        layer,
+                        row: cell.row,
+                        col: cell.col,
+                        count: 1,
+                    });
+                }
+            }
+        });
+        if let Some(r) = run.take() {
+            self.flush(gpu, r);
+        }
+    }
+
+    /// One `glTexSubImage3D` per level of the run, straight from the
+    /// page's memory through unpack row length and skip.
+    fn flush(&mut self, gpu: &Gpu, r: Run) {
+        let gl = &gpu.gl;
+        // SAFETY: see `Run`: the page this run points at is still inside
+        // the atlas's storage, unmoved and unfreed, for `upload`'s call.
+        let page = unsafe { &*r.page };
+        let (unit, format, levels) = match array_of(page.class()) {
+            Array::Mono => (
+                0,
+                glow::RED,
+                if page.class() == Class::Glyph {
+                    1
+                } else {
+                    LEVELS
+                },
+            ),
+            Array::Color => (1, glow::RGBA, LEVELS),
+        };
+        // SAFETY: the array on `unit` is bound for the device's life; the
+        // slice is the page's whole level and the skip stays inside it.
+        unsafe {
+            gl.active_texture(glow::TEXTURE0 + unit);
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            for k in 0..levels {
+                let side = (CELL >> k) as i32;
+                let (x, y) = (r.col as i32 * side, r.row as i32 * side);
+                gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (PAGE >> k) as i32);
+                gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, x);
+                gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, y);
+                gl.tex_sub_image_3d(
+                    glow::TEXTURE_2D_ARRAY,
+                    k,
+                    x,
+                    y,
+                    r.layer as i32,
+                    side * r.count as i32,
+                    side,
+                    1,
+                    format,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(page.level(k as u32))),
+                );
+                self.calls += 1;
+            }
+            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, 0);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, 0);
+        }
+    }
+
+    pub(crate) fn drop_with(&self, gpu: &Gpu) {
+        // SAFETY: textures this module made.
+        unsafe {
+            gpu.gl.delete_texture(self.mono);
+            gpu.gl.delete_texture(self.color);
+        }
+    }
+}
