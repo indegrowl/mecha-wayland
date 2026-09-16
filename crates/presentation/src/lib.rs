@@ -70,6 +70,7 @@
 use std::collections::HashMap;
 
 use app::prelude::*;
+use atlas::Atlas;
 use geometry::{Rect, Size};
 use gles::{Budget, Device};
 use layout::prelude::*;
@@ -175,6 +176,20 @@ impl Surfaces {
         let w = *self.owner.get(&object)?;
         self.entries.get_mut(&w).map(|e| (w, e))
     }
+
+    /// The pixels of the slot most recently drawn for `window`, as
+    /// `(width, height, RGBA8 rows top-down)`. `None` before the first
+    /// frame. For tests.
+    pub fn last_frame(&mut self, window: NodeId) -> Option<(u32, u32, Vec<u8>)> {
+        let e = self.entries.get(&window)?;
+        let slots = e.slots.as_ref()?;
+        let slot = slots
+            .slots
+            .iter()
+            .filter(|s| s.drawn.is_some())
+            .max_by_key(|s| s.drawn)?;
+        Some((slots.width, slots.height, self.device.read(&slot.target)))
+    }
 }
 
 /// Registers `Role`, inserts `Surfaces`, opens the GPU, binds the layer
@@ -234,6 +249,7 @@ impl Module for PresentationModule {
             .system(on_layer_surface)
             .system(on_surface)
             .system(on_frame_requested)
+            .system(on_atlas_changed)
             .system(on_callback)
             .system(on_buffer)
             .system(on_removed)
@@ -533,6 +549,16 @@ fn on_frame_requested(app: &mut App, r: &FrameRequested) {
         entry.wanting = true;
     }
     kick(app, r.0);
+}
+
+/// The atlas changed this tick: upload before any frame the same tick's
+/// changes request. `OnChanged<Atlas>` is queued by the core at
+/// `PostTick`, ahead of the `RequestFrame` that render's own `OnChanged`
+/// handlers raise, so a page always has its texture before a command
+/// samples it.
+fn on_atlas_changed(app: &mut App, _: &OnChanged<Atlas>) {
+    let (mut surfaces, atlas) = app.query::<(ResMut<Surfaces>, Res<Atlas>)>();
+    surfaces.device.upload(&atlas);
 }
 
 /// The drawer and the commit: the last `Frame` system to run.

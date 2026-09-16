@@ -720,8 +720,121 @@ fn close_and_closed_are_advice_at_the_window() {
 }
 
 #[test]
-#[ignore = "rewritten in Task 6/7"]
-fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {}
+fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    f.app.remove(win);
+    f.app.tick();
+    f.turn();
+    let s = shape(&mut f);
+    assert_eq!(
+        s,
+        vec![
+            (TOPLEVEL, op::TOPLEVEL_DESTROY),
+            (XDG, op::XDG_DESTROY),
+            (BUF_A, op::BUFFER_DESTROY),
+            (BUF_B, op::BUFFER_DESTROY),
+            (SURFACE, op::SURFACE_DESTROY),
+        ]
+    );
+    assert!(f.app.resource::<Surfaces>().surface_of(win).is_none());
+    // A late release for a destroyed buffer is ignored.
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    assert!(shape(&mut f).is_empty());
+}
+
+// ── Task 7 (atlas + last_frame) ─────────────────────────────────────────
+
+#[test]
+fn the_first_frame_holds_the_clear_colour() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn(
+            root,
+            window()
+                .title("hello")
+                .clear(Color::rgb(0.0, 0.0, 1.0))
+                .layout(LayoutStyle::default().column().size(px(20.0), px(10.0))),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(0);
+        w.int(0);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    let (w, h, px) = f
+        .app
+        .resource_mut::<Surfaces>()
+        .last_frame(win)
+        .expect("a frame was drawn");
+    assert_eq!((w, h), (20, 10));
+    assert_eq!(&px[..4], &[0, 0, 255, 255]);
+    assert_eq!(&px[px.len() - 4..], &[0, 0, 255, 255]);
+}
+
+#[test]
+fn a_glyph_resolved_in_a_tick_is_on_the_gpu_before_that_ticks_frame() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 64, 64);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.turn();
+    // Resolve a glyph and paint it in one tick: the atlas upload runs on
+    // OnChanged<Atlas> at PostTick, before render's request for the frame.
+    let tile = {
+        let mut atlas = f.app.resource_mut::<Atlas>();
+        let inter = atlas
+            .add_font(include_bytes!(
+                "../../atlas/tests/fixtures/Inter-Regular.ttf"
+            ))
+            .unwrap();
+        let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+        atlas.glyph(font, id, 40).tile
+    };
+    struct Leaf;
+    impl Build for Leaf {
+        type Widget = Leaf;
+    }
+    impl Widget for Leaf {
+        type Builder = Leaf;
+        fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self {
+            b
+        }
+    }
+    let size = tile.bounds.size;
+    f.app.spawn_with(
+        win,
+        Leaf,
+        (
+            LayoutStyle::default().size(px(size.width), px(size.height)),
+            Paint::Monochrome(vec![MonochromeSprite::new(
+                tile,
+                geometry::Point::ZERO,
+                size,
+                Color::WHITE,
+            )]),
+        ),
+    );
+    f.app.tick();
+    f.turn();
+    assert!(!attaches(&mut f).is_empty(), "the glyph frame was drawn");
+    let (w, _h, px) = f.app.resource_mut::<Surfaces>().last_frame(win).unwrap();
+    let brightest = px.chunks(4).map(|p| p[0]).max().unwrap();
+    assert!(
+        brightest > 200,
+        "the glyph's ink is white on black: {brightest}"
+    );
+    let _ = w;
+}
 
 // ── final review ─────────────────────────────────────────────────────────
 
