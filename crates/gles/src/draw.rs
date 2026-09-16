@@ -8,13 +8,14 @@ use crate::program::Program;
 use crate::target::Target;
 
 /// A device-pixel rect rounded outward to whole pixels, as GL scissor
-/// arguments with y flipped: `(x, y, w, h)`.
-pub(crate) fn scissor(r: Rect, height: u32) -> (i32, i32, i32, i32) {
+/// arguments: `(x, y, w, h)`. GL's y and the device's are the same y, so
+/// nothing is flipped.
+pub(crate) fn scissor(r: Rect) -> (i32, i32, i32, i32) {
     let x0 = r.x().floor() as i32;
     let y0 = r.y().floor() as i32;
     let x1 = r.right().ceil() as i32;
     let y1 = r.bottom().ceil() as i32;
-    (x0, height as i32 - y1, x1 - x0, y1 - y0)
+    (x0, y0, x1 - x0, y1 - y0)
 }
 
 pub(crate) fn clear(gpu: &Gpu, t: &Target, q: &render::Queue) {
@@ -28,7 +29,7 @@ pub(crate) fn clear(gpu: &Gpu, t: &Target, q: &render::Queue) {
         gl.clear_color(q.clear.r, q.clear.g, q.clear.b, 1.0);
         gl.clear_depth_f32(1.0);
         for &r in &q.scissor {
-            let (x, y, w, h) = scissor(r, t.height());
+            let (x, y, w, h) = scissor(r);
             gl.scissor(x, y, w, h);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
@@ -81,7 +82,7 @@ pub(crate) fn passes(gpu: &Gpu, p: &Program, t: &Target, q: &render::Queue) {
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
             gl.uniform_1_i32(p.u_opaque.as_ref(), 1);
-            pass(gl, t, &q.opaque);
+            pass(gl, &q.opaque);
         }
         if !q.translucent.scissor.is_empty() {
             p.point(gl, opaque.len() as i32);
@@ -89,16 +90,16 @@ pub(crate) fn passes(gpu: &Gpu, p: &Program, t: &Target, q: &render::Queue) {
             gl.enable(glow::BLEND);
             gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
             gl.uniform_1_i32(p.u_opaque.as_ref(), 0);
-            pass(gl, t, &q.translucent);
+            pass(gl, &q.translucent);
         }
     }
 }
 
 /// One instanced draw of the whole list per scissor rect.
-unsafe fn pass(gl: &glow::Context, t: &Target, pass: &Pass) {
+unsafe fn pass(gl: &glow::Context, pass: &Pass) {
     let n = pass.commands.len() as i32;
     for &r in &pass.scissor {
-        let (x, y, w, h) = scissor(r, t.height());
+        let (x, y, w, h) = scissor(r);
         // SAFETY: as the caller's.
         unsafe {
             gl.scissor(x, y, w, h);

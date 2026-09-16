@@ -43,7 +43,7 @@ void main() {
     vec2 p = a_rect.xy + corner * a_rect.zw;
     gl_Position = vec4(
         p.x / u_size.x * 2.0 - 1.0,
-        1.0 - p.y / u_size.y * 2.0,
+        p.y / u_size.y * 2.0 - 1.0,
         1.0 - 2.0 * (a_z + 0.5) / u_depth,
         1.0);
     v_half = a_rect.zw * 0.5;

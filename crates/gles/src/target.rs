@@ -182,10 +182,11 @@ pub(crate) fn destroy(gpu: &Gpu, t: Target) {
     // `t.planes` and `t._bo` drop here, fds and buffer last.
 }
 
-/// Top-down RGBA8 rows of the whole target.
+/// Top-down RGBA8 rows of the whole target: GL row 0 is the buffer's
+/// first row, which is the top one, so the rows come back as they lie.
 pub(crate) fn read(gpu: &Gpu, t: &Target) -> Vec<u8> {
     let (w, h) = (t.width as usize, t.height as usize);
-    let mut bottom_up = vec![0u8; w * h * 4];
+    let mut out = vec![0u8; w * h * 4];
     let gl = &gpu.gl;
     // SAFETY: the FBO is this target's; the slice is sized for it.
     unsafe {
@@ -198,13 +199,8 @@ pub(crate) fn read(gpu: &Gpu, t: &Target) -> Vec<u8> {
             t.height as i32,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut bottom_up)),
+            glow::PixelPackData::Slice(Some(&mut out)),
         );
-    }
-    let row = w * 4;
-    let mut out = Vec::with_capacity(bottom_up.len());
-    for y in (0..h).rev() {
-        out.extend_from_slice(&bottom_up[y * row..(y + 1) * row]);
     }
     out
 }
