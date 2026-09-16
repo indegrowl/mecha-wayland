@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+atlas.workspace = true
 gbm.workspace = true
 geometry.workspace = true
 glow.workspace = true

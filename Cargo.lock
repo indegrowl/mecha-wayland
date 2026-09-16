@@ -227,6 +227,7 @@ version = "0.1.0"
 name = "gles"
 version = "0.1.0"
 dependencies = [
+ "atlas",
  "gbm",
  "geometry",
  "glow",

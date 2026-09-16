@@ -3,7 +3,9 @@
 //! render targets, and the draw of a `render::Queue`. Crate docs are
 //! completed in the last task of the slice.
 
+mod draw;
 mod egl;
+mod program;
 mod target;
 
 pub use target::{Plane, Target, XRGB8888};
@@ -47,6 +49,7 @@ pub enum Error {
 pub struct Device {
     gpu: egl::Gpu,
     budget: Budget,
+    program: program::Program,
 }
 
 impl Device {
@@ -54,7 +57,12 @@ impl Device {
     /// [`Error::NoDevice`].
     pub fn try_open(budget: Budget) -> Result<Device, Error> {
         let gpu = egl::Gpu::open()?;
-        Ok(Device { gpu, budget })
+        let program = program::Program::new(&gpu);
+        Ok(Device {
+            gpu,
+            budget,
+            program,
+        })
     }
 
     /// [`Device::try_open`] or a panic naming the step that failed.
@@ -100,48 +108,7 @@ impl Device {
             return;
         }
         draw::clear(&self.gpu, target, queue);
+        draw::passes(&self.gpu, &self.program, target, queue);
         draw::finish(&self.gpu);
-    }
-}
-
-mod draw {
-    #![allow(unsafe_code)]
-    use geometry::Rect;
-    use glow::HasContext;
-
-    use crate::egl::Gpu;
-    use crate::target::Target;
-
-    /// A device-pixel rect rounded outward to whole pixels, as GL scissor
-    /// arguments with y flipped: `(x, y, w, h)`.
-    pub(crate) fn scissor(r: Rect, height: u32) -> (i32, i32, i32, i32) {
-        let x0 = r.x().floor() as i32;
-        let y0 = r.y().floor() as i32;
-        let x1 = r.right().ceil() as i32;
-        let y1 = r.bottom().ceil() as i32;
-        (x0, height as i32 - y1, x1 - x0, y1 - y0)
-    }
-
-    pub(crate) fn clear(gpu: &Gpu, t: &Target, q: &render::Queue) {
-        let gl = &gpu.gl;
-        // SAFETY: the context is current and the FBO is this target's.
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(t.fbo));
-            gl.viewport(0, 0, t.width() as i32, t.height() as i32);
-            gl.enable(glow::SCISSOR_TEST);
-            gl.depth_mask(true);
-            gl.clear_color(q.clear.r, q.clear.g, q.clear.b, 1.0);
-            gl.clear_depth_f32(1.0);
-            for &r in &q.scissor {
-                let (x, y, w, h) = scissor(r, t.height());
-                gl.scissor(x, y, w, h);
-                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-            }
-        }
-    }
-
-    pub(crate) fn finish(gpu: &Gpu) {
-        // SAFETY: the context is current.
-        unsafe { gpu.gl.flush() }
     }
 }
