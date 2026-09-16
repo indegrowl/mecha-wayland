@@ -43,8 +43,9 @@ pub struct Target {
     color: glow::Renderbuffer,
     depth: glow::Renderbuffer,
     image: egl::Image,
-    /// Must outlive `image`; dropped last by declaration order.
-    _bo: gbm::BufferObject<()>,
+    /// Must outlive `image`; dropped last by declaration order. Mapped
+    /// on the CPU by [`first_row`].
+    bo: gbm::BufferObject<()>,
 }
 
 impl Target {
@@ -58,7 +59,8 @@ impl Target {
     pub fn fourcc(&self) -> u32 {
         XRGB8888
     }
-    /// The layout GBM chose, `0` for linear.
+    /// The layout GBM chose, `0` for linear — which is what the fallback
+    /// buffer reports, since it is created linear.
     pub fn modifier(&self) -> u64 {
         self.modifier
     }
@@ -72,34 +74,64 @@ impl Target {
     }
 }
 
-fn buffer(gpu: &Gpu, width: u32, height: u32, modifiers: &[u64]) -> gbm::BufferObject<()> {
+/// `DRM_FORMAT_MOD_LINEAR`.
+const LINEAR: u64 = 0;
+
+/// `DRM_FORMAT_MOD_INVALID`, what `gbm_bo_get_modifier` reports for a
+/// buffer the legacy `gbm_bo_create` made: that entry point takes flags,
+/// not modifiers, so Mesa records none.
+const INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+
+/// The buffer and the modifier to report for it.
+///
+/// The modifier list is the compositor's, in the order it advertised
+/// them, and GBM picks the first it can produce. It may refuse the lot:
+/// the compositor advertises what it can *import and scan out*, which on
+/// a split-GPU or multi-driver machine is not what this render node can
+/// *render into*. Falling back is safe rather than fatal because linear
+/// is the one layout every driver renders and every compositor imports —
+/// slower on a tiler (see the crate docs), but correct everywhere. The
+/// reason GBM gave is dropped: there is nothing to do with it but take
+/// the fallback, and the target reports the layout it ended up with, so
+/// a caller that cares can compare.
+fn buffer(gpu: &Gpu, width: u32, height: u32, modifiers: &[u64]) -> (gbm::BufferObject<()>, u64) {
     let linear = || {
-        gpu.gbm
+        let bo = gpu
+            .gbm
             .create_buffer_object::<()>(
                 width,
                 height,
                 Format::Xrgb8888,
                 BufferObjectFlags::RENDERING | BufferObjectFlags::LINEAR,
             )
-            .unwrap_or_else(|e| panic!("gles: gbm_bo_create({width}x{height}, linear): {e}"))
+            .unwrap_or_else(|e| panic!("gles: gbm_bo_create({width}x{height}, linear): {e}"));
+        // `GBM_BO_USE_LINEAR` is a linear layout, but this entry point
+        // records no modifier and the buffer reports `INVALID`, which is
+        // not a value `zwp_linux_buffer_params_v1.add` accepts. Name the
+        // layout we asked for.
+        (bo, LINEAR)
     };
     if modifiers.is_empty() {
         return linear();
     }
-    gpu.gbm
-        .create_buffer_object_with_modifiers2::<()>(
-            width,
-            height,
-            Format::Xrgb8888,
-            modifiers.iter().map(|&m| Modifier::from(m)),
-            BufferObjectFlags::RENDERING,
-        )
-        .unwrap_or_else(|_| linear())
+    match gpu.gbm.create_buffer_object_with_modifiers2::<()>(
+        width,
+        height,
+        Format::Xrgb8888,
+        modifiers.iter().map(|&m| Modifier::from(m)),
+        BufferObjectFlags::RENDERING,
+    ) {
+        Ok(bo) => {
+            let m = u64::from(bo.modifier());
+            let m = if m == INVALID { LINEAR } else { m };
+            (bo, m)
+        }
+        Err(_) => linear(),
+    }
 }
 
 pub(crate) fn create(gpu: &Gpu, width: u32, height: u32, modifiers: &[u64]) -> Target {
-    let bo = buffer(gpu, width, height, modifiers);
-    let modifier = u64::from(bo.modifier());
+    let (bo, modifier) = buffer(gpu, width, height, modifiers);
     let planes = (0..bo.plane_count() as i32)
         .map(|i| PlaneData {
             fd: bo
@@ -165,7 +197,7 @@ pub(crate) fn create(gpu: &Gpu, width: u32, height: u32, modifiers: &[u64]) -> T
         color,
         depth,
         image,
-        _bo: bo,
+        bo,
     }
 }
 
@@ -179,7 +211,7 @@ pub(crate) fn destroy(gpu: &Gpu, t: Target) {
         gl.delete_renderbuffer(t.depth);
     }
     let _ = gpu.egl.destroy_image(gpu.display, t.image);
-    // `t.planes` and `t._bo` drop here, fds and buffer last.
+    // `t.planes` and `t.bo` drop here, fds and buffer last.
 }
 
 /// Top-down RGBA8 rows of the whole target: GL row 0 is the buffer's
@@ -203,4 +235,21 @@ pub(crate) fn read(gpu: &Gpu, t: &Target) -> Vec<u8> {
         );
     }
     out
+}
+
+/// The dmabuf's own first row, read from its memory with the GPU
+/// flushed: `width * 4` bytes of XRGB8888, which is little-endian, so
+/// `B, G, R, X` per pixel.
+///
+/// This is the one reader that does not go through GL. `read` uses
+/// `glReadPixels`, which shares its y with the shader and the scissor,
+/// so a flip in all three would be invisible to it; the row here is the
+/// row the compositor scans out first. For tests.
+pub(crate) fn first_row(gpu: &Gpu, t: &Target) -> Vec<u8> {
+    // SAFETY: the context is current; the draw must land in the buffer
+    // before the CPU maps it.
+    unsafe { gpu.gl.finish() };
+    let row = t.width as usize * 4;
+    t.bo.map(0, 0, t.width, 1, |m| m.buffer()[..row].to_vec())
+        .unwrap_or_else(|e| panic!("gles: gbm_bo_map({}x1): {e}", t.width))
 }

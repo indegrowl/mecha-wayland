@@ -24,6 +24,7 @@ fn a_linear_target_has_one_plane_and_the_xrgb_fourcc() {
     let t = d.target(64, 48, &[]);
     assert_eq!((t.width(), t.height()), (64, 48));
     assert_eq!(t.fourcc(), XRGB8888);
+    assert_eq!(t.modifier(), 0, "an empty list is linear");
     let planes: Vec<_> = t.planes().collect();
     assert_eq!(planes.len(), 1);
     assert!(planes[0].stride >= 64 * 4);
@@ -521,4 +522,64 @@ fn a_pass_is_drawn_only_inside_its_scissor() {
 fn queue_with_depth(mut q: Queue, depth: f32) -> Queue {
     q.depth = depth;
     q
+}
+
+#[test]
+fn a_bogus_modifier_falls_back_to_a_linear_buffer() {
+    let Some((_g, mut d)) = device() else { return };
+    // No vendor owns 0x00ff_ffff_ffff_fffe, so GBM refuses the list and
+    // `target` falls back to `RENDERING | LINEAR`, which every driver can
+    // render into and every compositor can import.
+    let t = d.target(16, 16, &[0x00ff_ffff_ffff_fffe]);
+    assert_eq!(t.modifier(), 0, "DRM_FORMAT_MOD_LINEAR");
+    assert_eq!(t.planes().count(), 1);
+    d.destroy(t);
+}
+
+#[test]
+fn the_buffers_first_row_is_the_drawings_top_row() {
+    let Some((_g, mut d)) = device() else { return };
+    let (w, h) = (16u32, 8u32);
+    // A linear target, so the CPU map below reads the pixels as they lie.
+    let t = d.target(w, h, &[]);
+    let blue = Color::rgb(0.0, 0.0, 1.0);
+    let q = queue(w as f32, h as f32, blue, whole(w as f32, h as f32));
+    let q = opaque(
+        q,
+        vec![quad(
+            Rect::new(0.0, 0.0, w as f32, 1.0),
+            0.0,
+            Color::WHITE,
+            Some(blue),
+        )],
+    );
+    d.draw(&t, &q);
+    let px = d.read(&t);
+    png("the_buffers_first_row_is_the_drawings_top_row", w, h, &px);
+    for x in 0..w {
+        assert_eq!(pixel(&px, w, x, 0), rgb(1.0, 1.0, 1.0), "read row 0 at {x}");
+    }
+    for x in 0..w {
+        assert_eq!(
+            pixel(&px, w, x, h - 1),
+            rgb(0.0, 0.0, 1.0),
+            "read row {} at {x}",
+            h - 1
+        );
+    }
+    // `read` shares its y with the shader and the scissor, so the two
+    // assertions above hold under a flip in all three. This one does not:
+    // it reads the dmabuf's memory, whose first row is the row the
+    // compositor puts at the top of the window. XRGB8888 is
+    // little-endian, so the bytes are B, G, R, X.
+    let row = d.first_row(&t);
+    assert_eq!(row.len(), w as usize * 4);
+    for x in 0..w as usize {
+        assert_eq!(
+            &row[x * 4..x * 4 + 3],
+            &[255, 255, 255],
+            "buffer row 0 at {x}"
+        );
+    }
+    d.destroy(t);
 }

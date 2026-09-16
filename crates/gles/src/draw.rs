@@ -43,16 +43,13 @@ pub(crate) fn finish(gpu: &Gpu) {
 
 /// The command list as the bytes it is. `Command` is `repr(C)`,
 /// 124 bytes, all `f32` and `u32`, no padding; `tests/layout.rs`
-/// pins that.
+/// pins that. The length comes from `size_of::<Command>()` rather than
+/// from [`Program::STRIDE`], and a `const _` beside `STRIDE` asserts the
+/// two are equal, so the slice can never be longer than the allocation.
 fn bytes(cmds: &[Command]) -> &[u8] {
     // SAFETY: a `repr(C)` struct of plain numbers has no padding and
     // no invalid byte patterns; the length is exact.
-    unsafe {
-        std::slice::from_raw_parts(
-            cmds.as_ptr() as *const u8,
-            cmds.len() * Program::STRIDE as usize,
-        )
-    }
+    unsafe { std::slice::from_raw_parts(cmds.as_ptr() as *const u8, std::mem::size_of_val(cmds)) }
 }
 
 pub(crate) fn passes(gpu: &Gpu, p: &Program, t: &Target, q: &render::Queue) {

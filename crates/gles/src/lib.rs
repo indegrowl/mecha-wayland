@@ -161,6 +161,19 @@ impl Device {
         target::read(&self.gpu, target)
     }
 
+    /// The target's buffer's first row, mapped on the CPU after a finish,
+    /// as `width * 4` bytes of XRGB8888: little-endian, so `B, G, R, X`
+    /// per pixel.
+    ///
+    /// The only reader that bypasses GL. [`Device::read`] is
+    /// `glReadPixels`, which shares its y with the shader and the
+    /// scissor, so a flip in all three would be invisible to it; this row
+    /// is the one the compositor scans out first. For tests; a buffer the
+    /// driver cannot map is a panic.
+    pub fn first_row(&mut self, target: &Target) -> Vec<u8> {
+        target::first_row(&self.gpu, target)
+    }
+
     /// Uploads what changed in the atlas: new pages get a layer, dirty
     /// cells go up as runs. Takes `&Atlas`, so the drain is not a write.
     pub fn upload(&mut self, atlas: &atlas::Atlas) {

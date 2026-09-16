@@ -166,6 +166,9 @@ fn compile(gl: &glow::Context, kind: u32, src: &str, name: &str) -> glow::Shader
 
 impl Program {
     /// Bytes between two instances: `size_of::<render::Command>()`.
+    /// The attribute offsets below are written against this number, so
+    /// the `const _` under this `impl` refuses to compile if `Command`
+    /// ever grows or shrinks.
     pub(crate) const STRIDE: i32 = 124;
 
     pub(crate) fn new(gpu: &Gpu) -> Program {
@@ -249,3 +252,8 @@ impl Program {
         }
     }
 }
+
+/// `draw::bytes` reinterprets a `&[render::Command]` as bytes and the VAO
+/// strides through it by [`Program::STRIDE`]; the two must be the same
+/// number, and this fails the build the day they are not.
+const _: () = assert!(Program::STRIDE as usize == std::mem::size_of::<render::Command>());
