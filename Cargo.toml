@@ -25,6 +25,7 @@ resolver = "3"
 app = { path = "crates/app" }
 atlas = { path = "crates/atlas" }
 geometry = { path = "crates/geometry" }
+gles = { path = "crates/gles" }
 layout = { path = "crates/layout" }
 paint = { path = "crates/paint" }
 presentation = { path = "crates/presentation" }

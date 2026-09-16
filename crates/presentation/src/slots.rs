@@ -1,0 +1,95 @@
+//! Two dmabuf slots per window: a `gles::Target` each, its `wl_buffer`
+//! from `zwp_linux_dmabuf_v1`, whether the compositor holds it, and
+//! when it was last drawn. Made and torn down through the device.
+
+use gles::{Device, Target};
+use wayland::prelude::*;
+
+pub(crate) struct Slot {
+    pub(crate) target: Target,
+    pub(crate) buffer: WlBuffer,
+    /// Attached and not yet released by the compositor.
+    pub(crate) held: bool,
+    /// The window's frame counter when this slot was last drawn; `None`
+    /// until then.
+    pub(crate) drawn: Option<u64>,
+}
+
+pub(crate) struct Slots {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) slots: [Slot; 2],
+}
+
+fn slot(
+    device: &mut Device,
+    wl: &mut Wayland,
+    dmabuf: ZwpLinuxDmabufV1,
+    modifiers: &[u64],
+    width: u32,
+    height: u32,
+) -> Slot {
+    let target = device.target(width, height, modifiers);
+    let params = dmabuf.create_params(wl);
+    let modifier = target.modifier();
+    for (i, p) in target.planes().enumerate() {
+        params.add(
+            wl,
+            p.fd,
+            i as u32,
+            p.offset,
+            p.stride,
+            (modifier >> 32) as u32,
+            modifier as u32,
+        );
+    }
+    let buffer = params.create_immed(
+        wl,
+        width as i32,
+        height as i32,
+        target.fourcc(),
+        ZwpLinuxBufferParamsV1Flags::empty(),
+    );
+    params.destroy(wl);
+    Slot {
+        target,
+        buffer,
+        held: false,
+        drawn: None,
+    }
+}
+
+impl Slots {
+    /// Two slots of `width` by `height` device pixels, laid out by the
+    /// first of `modifiers` the GPU accepts, linear when the list is
+    /// empty.
+    pub(crate) fn create(
+        device: &mut Device,
+        wl: &mut Wayland,
+        dmabuf: ZwpLinuxDmabufV1,
+        modifiers: &[u64],
+        width: u32,
+        height: u32,
+    ) -> Slots {
+        Slots {
+            width,
+            height,
+            slots: [
+                slot(device, wl, dmabuf, modifiers, width, height),
+                slot(device, wl, dmabuf, modifiers, width, height),
+            ],
+        }
+    }
+
+    pub(crate) fn free_slot(&self) -> Option<usize> {
+        self.slots.iter().position(|s| !s.held)
+    }
+
+    /// Destroys both buffers on the wire and both targets on the device.
+    pub(crate) fn destroy(self, device: &mut Device, wl: &mut Wayland) {
+        for s in self.slots {
+            s.buffer.destroy(wl);
+            device.destroy(s.target);
+        }
+    }
+}

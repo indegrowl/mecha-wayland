@@ -12,36 +12,49 @@
 //!   `ScaleFactorChanged`; `close` and `closed` become `CloseRequested`,
 //!   which this module only reports.
 //! - The frame loop: `FrameRequested` marks the window wanting; when it
-//!   is configured, no callback is outstanding and a buffer is free, this
-//!   module signals `Frame`. Its own `Frame` system runs last of all:
-//!   in v0 it fills a `wl_shm` buffer with the window's clear colour,
-//!   attaches, damages, asks for the callback and commits. The callback's
-//!   `done` and a buffer's `release` each try again. A configure wants a
-//!   frame by itself, since the compositor is asking for a buffer.
-//! - Removal destroys the role objects, the buffers and the surface.
-//!   [`Surfaces`] is the module's own state, readable for tests and for
-//!   a later input module.
+//!   is configured, no callback is outstanding and a slot is free, this
+//!   module signals `Frame`. Its own `Frame` system runs last of all: it
+//!   asks `render::Scenes` for the free slot's age, draws the queue with
+//!   the `gles::Device`, attaches, damages by the queue's scissor, asks
+//!   for the callback and commits. The callback's `done` and a slot's
+//!   `release` each try again. A configure that changes the window's size
+//!   does not by itself want a frame: the layout change it causes raises
+//!   the frame request through `render`. A configure that settles back to
+//!   the current layout size does, since nothing else would.
+//! - Removal destroys the role objects, the slots and their targets, and
+//!   the surface. [`Surfaces`] is the module's own state, readable for
+//!   tests and for a later input module.
 //!
-//! Installs last of everything, after `WindowModule` and `WaylandModule`,
-//! which must have bound `WlCompositor`, `WlShm` and `XdgWmBase`. The
-//! layer shell is bound here if the compositor offers it.
+//! Installs last of everything, after `WindowModule`, `RenderModule` and
+//! `WaylandModule`, which must have bound `WlCompositor`,
+//! `ZwpLinuxDmabufV1` and `XdgWmBase`. The layer shell is bound here if
+//! the compositor offers it; the GPU is opened here too.
 //!
 //! # Quick start
 //!
-//! ```
+//! ```no_run
 //! use app::prelude::*;
+//! use atlas::Atlas;
+//! use gles::Budget;
 //! use layout::prelude::*;
+//! use paint::prelude::*;
 //! use presentation::prelude::*;
+//! use render::prelude::*;
 //! use wayland::fake::Fake;
 //! use wayland::prelude::*;
 //! use window::prelude::*;
 //!
-//! let globals = [("wl_compositor", 6), ("wl_shm", 2), ("xdg_wm_base", 7)];
-//! let mut f = Fake::new(&globals, |m| m.bind::<WlCompositor>().bind::<WlShm>().bind::<XdgWmBase>());
+//! let globals = [("wl_compositor", 6), ("zwp_linux_dmabuf_v1", 3), ("xdg_wm_base", 7)];
+//! let mut f = Fake::new(&globals, |m| {
+//!     m.bind::<WlCompositor>().bind::<ZwpLinuxDmabufV1>().bind::<XdgWmBase>()
+//! });
 //! f.app
 //!     .add_module(LayoutModule)
+//!     .add_module(PaintModule)
 //!     .add_module(WindowModule)
-//!     .add_module(PresentationModule { app_id: "example".into() });
+//!     .add_module(RenderModule::default());
+//! f.app.insert_resource(Atlas::new());
+//! f.app.add_module(PresentationModule { app_id: "example".into(), budget: Budget::default() });
 //! let root = f.app.root();
 //! let win = f.app.spawn(root, window().title("hi")).id();
 //! f.app.tick();
@@ -57,14 +70,16 @@
 use std::collections::HashMap;
 
 use app::prelude::*;
-use geometry::Size;
+use geometry::{Rect, Size};
+use gles::{Budget, Device};
 use layout::prelude::*;
+use render::Scenes;
 use wayland::prelude::*;
 use window::prelude::*;
 
-mod shm;
+mod slots;
 
-use shm::Buffers;
+use slots::Slots;
 
 pub use wayland::{
     ZwlrLayerShellV1Layer as Layer, ZwlrLayerSurfaceV1Anchor as Anchor,
@@ -73,14 +88,23 @@ pub use wayland::{
 
 pub mod prelude {
     pub use crate::{
-        Anchor, DEFAULT_SIZE, KeyboardInteractivity, Layer, LayerRole, PresentationModule, Role,
-        Surfaces,
+        Anchor, BUFFERS, DEFAULT_SIZE, KeyboardInteractivity, Layer, LayerRole, PresentationModule,
+        Role, Surfaces,
     };
 }
 
 /// The size of a toplevel the compositor leaves to us when the window
 /// has no content to size it.
 pub const DEFAULT_SIZE: Size = Size::new(640.0, 480.0);
+
+/// How many slots a window holds. `RenderModule::buffers` must be at
+/// least this, which its default is, for a free slot's scissor to be
+/// exact.
+pub const BUFFERS: usize = 2;
+
+/// `DRM_FORMAT_MOD_INVALID`: a compositor's way of saying "implicit",
+/// which GBM cannot be asked for.
+const MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
 /// What a window is to the shell. Read once, at the window's `Spawned`;
 /// set it through the spawn bundle. Rewriting it later changes nothing.
@@ -121,8 +145,8 @@ struct Entry {
     configured: bool,
     callback: Option<WlCallback>,
     wanting: bool,
-    buffers: Option<Buffers>,
-    last_slot: usize,
+    slots: Option<Slots>,
+    frames: u64,
 }
 
 /// Presentation's own state: one entry per window it put on screen, and
@@ -132,6 +156,9 @@ pub struct Surfaces {
     owner: HashMap<ObjectId, NodeId>,
     layer_shell: Option<ZwlrLayerShellV1>,
     app_id: String,
+    device: Device,
+    dmabuf: ZwpLinuxDmabufV1,
+    modifiers: Vec<u64>,
 }
 impl Resource for Surfaces {}
 
@@ -144,39 +171,44 @@ impl Surfaces {
         self.entries.get(&window).is_some_and(|e| e.configured)
     }
 
-    /// One pixel of the buffer last attached for `window`, as `XRGB8888`.
-    /// `None` before the first attach. For tests and debugging.
-    pub fn buffer_pixel(&self, window: NodeId, x: u32, y: u32) -> Option<u32> {
-        let e = self.entries.get(&window)?;
-        e.buffers.as_ref()?.pixel(e.last_slot, x, y)
-    }
-
     fn entry_of(&mut self, object: ObjectId) -> Option<(NodeId, &mut Entry)> {
         let w = *self.owner.get(&object)?;
         self.entries.get_mut(&w).map(|e| (w, e))
     }
 }
 
-/// Registers `Role`, inserts `Surfaces`, binds the layer shell if the
-/// compositor offers one. Installs last of everything.
+/// Registers `Role`, inserts `Surfaces`, opens the GPU, binds the layer
+/// shell if the compositor offers one. Installs last of everything.
 ///
 /// # Panics
 ///
-/// If `WlCompositor`, `WlShm` or `XdgWmBase` were not bound by
-/// `WaylandModule`, or `wl_compositor` is below version 4.
+/// If `WlCompositor`, `ZwpLinuxDmabufV1` or `XdgWmBase` were not bound by
+/// `WaylandModule`, if `wl_compositor` is below version 4 or
+/// `zwp_linux_dmabuf_v1` below 3, or if the GPU does not open with a
+/// GLES 3.0 context.
 pub struct PresentationModule {
     pub app_id: String,
+    /// Room on the GPU for the atlas, allocated once at install.
+    pub budget: Budget,
 }
 
 impl Module for PresentationModule {
     fn install(self, app: &mut App) {
         let compositor = *app.resource::<WlCompositor>();
-        let _ = app.resource::<WlShm>();
+        let dmabuf = *app.resource::<ZwpLinuxDmabufV1>();
         let _ = app.resource::<XdgWmBase>();
-        assert!(
-            app.resource::<Wayland>().version(compositor) >= 4,
-            "presentation: wl_compositor must be version 4 or above for damage_buffer"
-        );
+        {
+            let wl = app.resource::<Wayland>();
+            assert!(
+                wl.version(compositor) >= 4,
+                "presentation: wl_compositor must be version 4 or above for damage_buffer"
+            );
+            assert!(
+                wl.version(dmabuf) >= 3,
+                "presentation: zwp_linux_dmabuf_v1 must be version 3 or above for modifier events"
+            );
+        }
+        let device = Device::open(self.budget);
         let layer_shell = app
             .resource::<Globals>()
             .find(ZwlrLayerShellV1::NAME)
@@ -190,9 +222,13 @@ impl Module for PresentationModule {
             owner: HashMap::new(),
             layer_shell,
             app_id: self.app_id,
+            device,
+            dmabuf,
+            modifiers: Vec::new(),
         });
         app.system(on_spawned)
             .system(on_wm_base)
+            .system(on_dmabuf)
             .system(on_xdg_surface)
             .system(on_toplevel)
             .system(on_layer_surface)
@@ -202,6 +238,24 @@ impl Module for PresentationModule {
             .system(on_buffer)
             .system(on_removed)
             .system(on_frame);
+    }
+}
+
+/// The compositor's layouts for XRGB8888, in the order advertised;
+/// `format` events and the implicit modifier are ignored.
+fn on_dmabuf(app: &mut App, e: &ZwpLinuxDmabufV1Event) {
+    if let ZwpLinuxDmabufV1Event::Modifier {
+        format,
+        modifier_hi,
+        modifier_lo,
+        ..
+    } = e
+        && *format == gles::XRGB8888
+    {
+        let m = ((*modifier_hi as u64) << 32) | *modifier_lo as u64;
+        if m != MOD_INVALID {
+            app.resource_mut::<Surfaces>().modifiers.push(m);
+        }
     }
 }
 
@@ -274,8 +328,8 @@ fn on_spawned(app: &mut App, s: &Spawned) {
             configured: false,
             callback: None,
             wanting: false,
-            buffers: None,
-            last_slot: 0,
+            slots: None,
+            frames: 0,
         },
     );
 }
@@ -285,7 +339,7 @@ fn on_wm_base(app: &mut App, e: &XdgWmBaseEvent) {
     wm_base.pong(&mut app.resource_mut::<Wayland>(), *serial);
 }
 
-fn device(size: Size, scale: i32) -> (u32, u32) {
+fn device_size(size: Size, scale: i32) -> (u32, u32) {
     let s = scale.max(1) as f32;
     (
         ((size.width * s).round() as u32).max(1),
@@ -293,36 +347,45 @@ fn device(size: Size, scale: i32) -> (u32, u32) {
     )
 }
 
-/// Forget both buffers' owner rows, then destroy the buffers and the pool.
-fn teardown_buffers(buffers: Buffers, owner: &mut HashMap<ObjectId, NodeId>, wl: &mut Wayland) {
-    for s in &buffers.slots {
+/// Forget both buffers' owner rows, then destroy the buffers and targets.
+fn teardown_slots(
+    slots: Slots,
+    owner: &mut HashMap<ObjectId, NodeId>,
+    device: &mut Device,
+    wl: &mut Wayland,
+) {
+    for s in &slots.slots {
         owner.remove(&s.buffer.id());
     }
-    buffers.destroy(wl);
+    slots.destroy(device, wl);
 }
 
-/// Drop the buffers, if any, and make new ones at the entry's size and
+/// Drop the slots, if any, and make new ones at the entry's size and
 /// scale, owned by `w`.
-fn replace_buffers(
+fn replace_slots(
     entry: &mut Entry,
     owner: &mut HashMap<ObjectId, NodeId>,
+    device: &mut Device,
+    dmabuf: ZwpLinuxDmabufV1,
+    modifiers: &[u64],
     wl: &mut Wayland,
-    shm: WlShm,
     w: NodeId,
 ) {
-    if let Some(old) = entry.buffers.take() {
-        teardown_buffers(old, owner, wl);
+    if let Some(old) = entry.slots.take() {
+        teardown_slots(old, owner, device, wl);
     }
-    let (dw, dh) = device(entry.size, entry.scale);
-    let buffers = Buffers::create(wl, shm, dw, dh);
-    for s in &buffers.slots {
+    let (dw, dh) = device_size(entry.size, entry.scale);
+    let slots = Slots::create(device, wl, dmabuf, modifiers, dw, dh);
+    for s in &slots.slots {
         owner.insert(s.buffer.id(), w);
     }
-    entry.buffers = Some(buffers);
+    entry.slots = Some(slots);
 }
 
-/// The shell configured `w`: settle the size, make buffers if the device
-/// size changed, report `Resized`, and want a frame.
+/// The shell configured `w`: settle the size, make slots if the device
+/// size changed, report `Resized`, and kick when the settled size is
+/// already the window's layout size (no layout change is coming to raise
+/// the frame request for us).
 fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
     let layout = app
         .component::<Layout>(w)
@@ -341,7 +404,6 @@ fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
         pick(proposed.0, layout.width, DEFAULT_SIZE.width),
         pick(proposed.1, layout.height, DEFAULT_SIZE.height),
     );
-    let shm = *app.resource::<WlShm>();
     {
         let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
         let s = &mut *surfaces;
@@ -349,22 +411,32 @@ fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
             return;
         };
         entry.size = size;
-        let (dw, dh) = device(size, entry.scale);
+        let (dw, dh) = device_size(size, entry.scale);
         let stale = entry
-            .buffers
+            .slots
             .as_ref()
             .is_none_or(|b| (b.width, b.height) != (dw, dh));
         if stale {
-            replace_buffers(entry, &mut s.owner, &mut wl, shm, w);
+            replace_slots(
+                entry,
+                &mut s.owner,
+                &mut s.device,
+                s.dmabuf,
+                &s.modifiers,
+                &mut wl,
+                w,
+            );
         }
         entry.configured = true;
         entry.wanting = true;
     }
     app.emit(Resized { size }, w);
-    kick(app, w);
+    if size == layout {
+        kick(app, w);
+    }
 }
 
-/// The one decision: configured, no callback outstanding, a buffer free
+/// The one decision: configured, no callback outstanding, a slot free
 /// and wanting gives `Frame(w)`. Otherwise the next configure, `done` or
 /// `release` kicks again.
 fn kick(app: &mut App, w: NodeId) {
@@ -372,7 +444,7 @@ fn kick(app: &mut App, w: NodeId) {
         e.configured
             && e.callback.is_none()
             && e.wanting
-            && e.buffers.as_ref().is_some_and(|b| b.free_slot().is_some())
+            && e.slots.as_ref().is_some_and(|b| b.free_slot().is_some())
     });
     if ready {
         app.resource_mut::<Surfaces>()
@@ -463,14 +535,11 @@ fn on_frame_requested(app: &mut App, r: &FrameRequested) {
     kick(app, r.0);
 }
 
-/// The drawer in v0, and the commit after every drawer for good: the last
-/// `Frame` system to run.
+/// The drawer and the commit: the last `Frame` system to run.
 fn on_frame(app: &mut App, f: &Frame) {
     let w = f.0;
-    let Some(clear) = app.widget::<Window>(w).map(|win| win.clear()) else {
-        return;
-    };
-    let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+    let (mut surfaces, mut wl, mut scenes) =
+        app.query::<(ResMut<Surfaces>, ResMut<Wayland>, ResMut<Scenes>)>();
     let s = &mut *surfaces;
     let Some(entry) = s.entries.get_mut(&w) else {
         return;
@@ -482,30 +551,57 @@ fn on_frame(app: &mut App, f: &Frame) {
         entry.wanting = true;
         return;
     }
-    let Some(buffers) = entry.buffers.as_mut() else {
+    let Some(slots) = entry.slots.as_mut() else {
         return;
     };
-    let Some(slot) = buffers.free_slot() else {
+    let Some(i) = slots.free_slot() else {
         entry.wanting = true;
         return;
     };
-    buffers.fill(slot, clear);
+    let age = slots.slots[i]
+        .drawn
+        .map(|d| (entry.frames - d) as usize)
+        .unwrap_or(0);
+    let Some(queue) = scenes.queue(w, age) else {
+        return;
+    };
+    if queue.scissor.is_empty() {
+        return;
+    }
+    if (queue.size.width as u32, queue.size.height as u32) != (slots.width, slots.height) {
+        // A frame between a configure and the layout that follows it:
+        // the layout's change requests the frame that fits.
+        entry.wanting = true;
+        return;
+    }
+    let slot = &mut slots.slots[i];
+    s.device.draw(&slot.target, queue);
     if entry.scale != entry.scale_sent {
         entry.surface.set_buffer_scale(&mut wl, entry.scale);
         entry.scale_sent = entry.scale;
     }
-    entry
-        .surface
-        .attach(&mut wl, Some(buffers.slots[slot].buffer), 0, 0);
-    entry
-        .surface
-        .damage_buffer(&mut wl, 0, 0, buffers.width as i32, buffers.height as i32);
+    entry.surface.attach(&mut wl, Some(slot.buffer), 0, 0);
+    for &r in &queue.scissor {
+        let (x, y, dw, dh) = outward(r);
+        entry.surface.damage_buffer(&mut wl, x, y, dw, dh);
+    }
     let callback = entry.surface.frame(&mut wl);
     s.owner.insert(callback.id(), w);
     entry.callback = Some(callback);
     entry.surface.commit(&mut wl);
-    buffers.slots[slot].held = true;
-    entry.last_slot = slot;
+    slot.held = true;
+    slot.drawn = Some(entry.frames);
+    entry.frames += 1;
+}
+
+/// A device-pixel rect rounded outward: `(x, y, width, height)` as
+/// `damage_buffer` takes them.
+fn outward(r: Rect) -> (i32, i32, i32, i32) {
+    let x0 = r.x().floor() as i32;
+    let y0 = r.y().floor() as i32;
+    let x1 = r.right().ceil() as i32;
+    let y1 = r.bottom().ceil() as i32;
+    (x0, y0, x1 - x0, y1 - y0)
 }
 
 fn on_callback(app: &mut App, e: &WlCallbackEvent) {
@@ -532,7 +628,7 @@ fn on_buffer(app: &mut App, e: &WlBufferEvent) {
         let Some((w, entry)) = surfaces.entry_of(buffer.id()) else {
             return;
         };
-        if let Some(b) = entry.buffers.as_mut()
+        if let Some(b) = entry.slots.as_mut()
             && let Some(slot) = b.slots.iter_mut().find(|s| s.buffer == *buffer)
         {
             slot.held = false;
@@ -543,12 +639,11 @@ fn on_buffer(app: &mut App, e: &WlBufferEvent) {
 }
 
 /// A new preferred scale: report it, and if configured rescale the
-/// buffers and want a frame. The same scale again does nothing.
+/// slots and want a frame. The same scale again does nothing.
 fn on_surface(app: &mut App, e: &WlSurfaceEvent) {
     let WlSurfaceEvent::PreferredBufferScale { surface, factor } = e else {
         return;
     };
-    let shm = *app.resource::<WlShm>();
     let changed = {
         let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
         let s = &mut *surfaces;
@@ -561,7 +656,15 @@ fn on_surface(app: &mut App, e: &WlSurfaceEvent) {
         } else {
             entry.scale = *factor;
             if entry.configured {
-                replace_buffers(entry, &mut s.owner, &mut wl, shm, w);
+                replace_slots(
+                    entry,
+                    &mut s.owner,
+                    &mut s.device,
+                    s.dmabuf,
+                    &s.modifiers,
+                    &mut wl,
+                    w,
+                );
                 entry.wanting = true;
             }
             Some(w)
@@ -579,8 +682,8 @@ fn on_surface(app: &mut App, e: &WlSurfaceEvent) {
 }
 
 /// Every entry whose window is gone is torn down: the role objects, the
-/// buffers and the pool, then the surface. A late event for any of them
-/// finds no owner and is skipped.
+/// slots and their targets, then the surface. A late event for any of
+/// them finds no owner and is skipped.
 fn on_removed(app: &mut App, _: &Removed) {
     let gone: Vec<NodeId> = {
         let surfaces = app.resource::<Surfaces>();
@@ -610,8 +713,8 @@ fn on_removed(app: &mut App, _: &Removed) {
                 s.owner.remove(&ls.id());
             }
         }
-        if let Some(buffers) = entry.buffers {
-            teardown_buffers(buffers, &mut s.owner, &mut wl);
+        if let Some(slots) = entry.slots {
+            teardown_slots(slots, &mut s.owner, &mut s.device, &mut wl);
         }
         entry.surface.destroy(&mut wl);
         s.owner.remove(&entry.surface.id());

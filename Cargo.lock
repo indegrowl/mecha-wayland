@@ -460,8 +460,12 @@ name = "presentation"
 version = "0.1.0"
 dependencies = [
  "app",
+ "atlas",
  "geometry",
+ "gles",
  "layout",
+ "paint",
+ "render",
  "ring",
  "wayland",
  "window",

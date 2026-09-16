@@ -3,9 +3,13 @@
 //! `cargo run -p presentation --example clear`.
 
 use app::prelude::*;
+use atlas::Atlas;
 use geometry::Color;
+use gles::Budget;
 use layout::prelude::*;
+use paint::prelude::*;
 use presentation::prelude::*;
+use render::prelude::*;
 use ring::prelude::*;
 use wayland::prelude::*;
 use window::prelude::*;
@@ -37,16 +41,20 @@ impl Widget for Shell {
 fn main() {
     let mut app = App::new();
     app.add_module(LayoutModule)
+        .add_module(PaintModule)
         .add_module(WindowModule)
-        .add_module(RingModule::default())
+        .add_module(RenderModule::default());
+    app.insert_resource(Atlas::new());
+    app.add_module(RingModule::default())
         .add_module(
             WaylandModule::new()
                 .bind::<WlCompositor>()
-                .bind::<WlShm>()
+                .bind::<ZwpLinuxDmabufV1>()
                 .bind::<XdgWmBase>(),
         )
         .add_module(PresentationModule {
             app_id: "mecha.clear".into(),
+            budget: Budget::default(),
         });
     let root = app.root();
     app.spawn(root, ShellBuilder { root });
