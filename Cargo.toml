@@ -7,6 +7,7 @@ edition = "2024"
 
 [dependencies]
 app.workspace = true
+atlas = { workspace = true, features = ["svg"] }
 geometry.workspace = true
 layout.workspace = true
 paint.workspace = true
@@ -17,11 +18,12 @@ wayland.workspace = true
 window.workspace = true
 
 [workspace]
-members = ["crates/app", "crates/geometry", "crates/layout", "crates/paint", "crates/presentation", "crates/render", "crates/ring", "crates/wayland", "crates/window"]
+members = ["crates/app", "crates/atlas", "crates/geometry", "crates/layout", "crates/paint", "crates/presentation", "crates/render", "crates/ring", "crates/wayland", "crates/window"]
 resolver = "3"
 
 [workspace.dependencies]
 app = { path = "crates/app" }
+atlas = { path = "crates/atlas" }
 geometry = { path = "crates/geometry" }
 layout = { path = "crates/layout" }
 paint = { path = "crates/paint" }
@@ -31,8 +33,11 @@ ring = { path = "crates/ring" }
 wayland = { path = "crates/wayland" }
 window = { path = "crates/window" }
 bitflags = "2"
+fontdue = "0.9"
 io-uring = "0.7"
 libc = "0.2"
+png = "0.18"
+resvg = { version = "0.44", default-features = false }
 smallvec = "1"
 taffy = { version = "0.10.1", default-features = false, features = ["std", "flexbox", "block_layout"] }
 

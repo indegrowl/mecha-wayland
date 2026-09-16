@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 app.workspace = true
+atlas.workspace = true
 geometry.workspace = true

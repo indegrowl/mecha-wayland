@@ -15,8 +15,8 @@
 //!   text widget resolves its string and font into a sprite run when
 //!   either changes, so paint never sees a string.
 //! - A sprite names its pixels through an [`AtlasTile`]: an [`AtlasId`]
-//!   and bounds in atlas pixels. Paint knows nothing else about atlases;
-//!   the id is an index the atlas module mints.
+//!   and bounds in atlas pixels, both defined by the `atlas` crate and
+//!   re-exported here. Paint knows nothing else about atlases.
 //! - [`PaintModule`] registers the component and nothing else. A write is
 //!   reported by the core's `OnChanged<Paint>` at the next `PostTick`, an
 //!   equal write through `set_if_neq` is not, and nothing here compares
@@ -61,33 +61,15 @@
 //! ```
 
 use app::{App, Component, Module};
-use geometry::{Color, Corners, Insets, Point, Rect, Size};
+use geometry::{Color, Corners, Insets, Point, Size};
+
+pub use atlas::{AtlasId, AtlasTile};
 
 pub mod prelude {
     pub use crate::{
         AtlasId, AtlasTile, MonochromeSprite, Paint, PaintModule, PolychromeSprite, Quad,
     };
     pub use geometry::{Color, Corners};
-}
-
-/// Which atlas a tile is in: a dense index the atlas mints, unique across
-/// the coverage and colour kinds, so a backend keys its textures by it.
-/// Minted by the atlas, never by paint.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct AtlasId(pub u32);
-
-/// One rectangle of an atlas: `bounds` in whole atlas pixels, padding
-/// excluded, held as a `Rect` because that is the shared type. A tile's
-/// bounds are stable while its atlas exists; an atlas grows by adding
-/// textures, never by moving tiles. Paint never sees a texture's size: a
-/// renderer divides `bounds` by the size of the texture it uploaded.
-/// `repr(C)` because a render command embeds it and is uploaded as is.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AtlasTile {
-    pub atlas: AtlasId,
-    pub bounds: Rect,
 }
 
 /// A filled box: a colour, a radius per corner, a border width per side
@@ -326,6 +308,7 @@ impl Module for PaintModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geometry::Rect;
 
     fn tile() -> AtlasTile {
         AtlasTile {
