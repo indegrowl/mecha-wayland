@@ -1,5 +1,5 @@
 // The fixture below (ids, opcodes, event opcodes, `configured`, `attaches`,
-// `log`, the logging systems) serves every task in this slice. Every test
+// `log`, the logging systems) serves every section below. Every test
 // needs the GPU: `fake()` returns `None` and prints a skip line without one.
 
 use std::sync::{Mutex, MutexGuard};
@@ -39,8 +39,17 @@ const PARAMS_B: u32 = 13;
 const BUF_B: u32 = 14;
 const CALLBACK: u32 = 15;
 
+// A layer window allocates only surface 8 and layer surface 9 (no
+// toplevel), so its first slot's params is 10 and buffer 11.
+const LAYER_BUF_A: u32 = 11;
+
 /// `DRM_FORMAT_XRGB8888`.
 const XRGB: u32 = 0x3432_5258;
+
+/// `I915_FORMAT_MOD_Y_TILED`, the second layout the fake advertises after
+/// the linear one. A vendor modifier the local GBM may or may not be able
+/// to produce, so the slots report whichever of the two it picked.
+const VENDOR_MOD: u64 = 0x0100_0000_0000_0002;
 
 // Opcodes, from the XML order.
 mod op {
@@ -50,7 +59,7 @@ mod op {
     pub const PARAMS_ADD: u16 = 1;
     pub const PARAMS_CREATE_IMMED: u16 = 3;
     /// Both a buffer's and a target's teardown; used by the scale test
-    /// here and by the removal test (Task 7).
+    /// and by the removal test.
     pub const BUFFER_DESTROY: u16 = 0;
     pub const SURFACE_DESTROY: u16 = 0;
     pub const ATTACH: u16 = 1;
@@ -117,8 +126,10 @@ fn log_frame(app: &mut App, f: &Frame) {
 static GPU: Mutex<()> = Mutex::new(());
 
 /// The fake compositor with the whole stack installed, behind the GPU
-/// lock, after it advertised the linear modifier for XRGB8888. `None`
-/// with a skip line when there is no render node.
+/// lock, after it advertised two layouts for XRGB8888: linear first, then
+/// [`VENDOR_MOD`]. GBM picks the first of the two it can render into, so
+/// which one a target reports is the driver's business, not the test's.
+/// `None` with a skip line when there is no render node.
 fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
     let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
     match Device::try_open(Budget::default()) {
@@ -139,6 +150,11 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         w.uint(0);
         w.uint(0);
     });
+    f.send(DMABUF, ev::DMABUF_MODIFIER, |w| {
+        w.uint(XRGB);
+        w.uint((VENDOR_MOD >> 32) as u32);
+        w.uint(VENDOR_MOD as u32);
+    });
     f.app
         .add_module(LayoutModule)
         .add_module(PaintModule)
@@ -158,6 +174,31 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
     f.turn();
     f.requests();
     Some((guard, f))
+}
+
+/// The `(hi, lo)` a `zwp_linux_buffer_params_v1.add` carries, past the
+/// plane index, the offset and the stride.
+fn added_modifier(r: &wayland::fake::Request) -> (u32, u32) {
+    let mut a = r.reader();
+    let (_plane, _offset, _stride) = (a.uint(), a.uint(), a.uint());
+    (a.uint().unwrap(), a.uint().unwrap())
+}
+
+/// Every `wl_surface.damage_buffer` of the drained requests, in order,
+/// as `(x, y, width, height)`.
+fn damage(reqs: &[wayland::fake::Request]) -> Vec<(i32, i32, i32, i32)> {
+    reqs.iter()
+        .filter(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::DAMAGE_BUFFER)
+        .map(|r| {
+            let mut d = r.reader();
+            (
+                d.int().unwrap(),
+                d.int().unwrap(),
+                d.int().unwrap(),
+                d.int().unwrap(),
+            )
+        })
+        .collect()
 }
 
 fn log(f: &Fake) -> Vec<String> {
@@ -233,7 +274,7 @@ fn repaint(f: &mut Fake, win: NodeId) {
     f.app.tick();
 }
 
-// ── Task 7 ───────────────────────────────────────────────────────────────
+// ── spawn and roles ────────────────────────────────────────────────────
 
 #[test]
 fn a_toplevel_window_gets_a_surface_a_role_and_an_initial_commit() {
@@ -325,11 +366,7 @@ fn a_ping_is_answered_with_a_pong() {
     assert_eq!(pong.reader().uint(), Some(77));
 }
 
-// ── Task 8 ───────────────────────────────────────────────────────────────
-
-// A layer window allocates only surface 8 and layer surface 9 (no
-// toplevel), so its first slot's params is 10 and buffer 11.
-const LAYER_BUF_A: u32 = 11;
+// ── configure and slots ────────────────────────────────────────────────
 
 #[test]
 fn a_configure_acks_makes_two_dmabuf_slots_and_the_layout_frame_draws() {
@@ -364,10 +401,23 @@ fn a_configure_acks_makes_two_dmabuf_slots_and_the_layout_frame_draws() {
     assert_eq!(add.uint(), Some(0), "plane 0");
     assert_eq!(add.uint(), Some(0), "offset 0");
     assert!(add.uint().unwrap() >= 320 * 4, "stride covers the row");
+    // The fake advertised linear and then `VENDOR_MOD`; GBM picked one of
+    // them, or fell back to linear because it could produce neither. The
+    // test does not care which — only that the wire carries the layout the
+    // target actually has, the same one for both slots, so the compositor
+    // reads the buffer the way the GPU wrote it. On this machine (Mesa
+    // 26.2 on the local render node) both `add`s carry 0, the linear
+    // modifier: the driver took the first layout advertised.
+    let (hi, lo) = added_modifier(&reqs[2]);
+    let m = ((hi as u64) << 32) | lo as u64;
+    assert!(
+        m == 0 || m == VENDOR_MOD,
+        "a layout the fake never advertised: {m:#018x}"
+    );
     assert_eq!(
-        (add.uint(), add.uint()),
-        (Some(0), Some(0)),
-        "the linear modifier"
+        added_modifier(&reqs[6]),
+        (hi, lo),
+        "both slots are laid out the same way"
     );
     let mut immed = reqs[3].reader();
     assert_eq!(immed.object(), Some(ObjectId(BUF_A)));
@@ -521,6 +571,8 @@ fn a_layer_configure_acks_and_draws_too() {
     assert_eq!(attach.reader().object(), Some(ObjectId(LAYER_BUF_A)));
 }
 
+// ── the frame loop ─────────────────────────────────────────────────────
+
 #[test]
 fn frames_are_throttled_by_the_callback() {
     let Some((_gpu, mut f)) = fake() else { return };
@@ -555,7 +607,53 @@ fn with_both_buffers_held_a_release_draws() {
 
     f.send(BUF_A, ev::RELEASE, |_| {});
     f.turn();
-    assert_eq!(attaches(&mut f), vec![BUF_A]);
+    let reqs = f.requests();
+    let attached: Vec<u32> = reqs
+        .iter()
+        .filter(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .map(|r| r.reader().object().unwrap().0)
+        .collect();
+    assert_eq!(attached, vec![BUF_A]);
+
+    // BUF_A last held frame 0 and the window is on frame 2, so it is
+    // redrawn at age 2: render's scissor is the union of the last two
+    // frames' damage, newest first, and nothing else. Each `repaint`
+    // spawned a 10 by 10 leaf into the window's column, so the second sits
+    // under the first: frame 2 damaged (0, 10, 10, 10) and frame 1 damaged
+    // (0, 0, 10, 10). The window is 64 by 64, so this is incremental
+    // damage, not a full repaint dressed up as one.
+    assert_eq!(damage(&reqs), vec![(0, 10, 10, 10), (0, 0, 10, 10)]);
+}
+
+#[test]
+fn a_repaint_into_a_released_slot_damages_only_that_rect() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 64, 64);
+    f.requests();
+    // Free the slot the first frame drew and clear the callback, without
+    // wanting anything: no frame runs, so no walk files a damage list.
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    assert!(attaches(&mut f).is_empty(), "nothing wanted");
+
+    // One 10 by 10 leaf changes. The redraw takes BUF_A back, which holds
+    // frame 0 of 1, so age 1: the scissor is that one frame's damage.
+    repaint(&mut f, win);
+    f.turn();
+    let reqs = f.requests();
+    assert_eq!(
+        reqs.iter()
+            .filter(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+            .count(),
+        1,
+        "the repaint drew"
+    );
+    assert_eq!(
+        damage(&reqs),
+        vec![(0, 0, 10, 10)],
+        "only the leaf, not the 64 by 64 window"
+    );
 }
 
 #[test]
@@ -585,7 +683,75 @@ fn two_configures_in_one_turn_draw_one_frame() {
     assert_eq!(attaches(&mut f).len(), 0, "nothing wanted yet");
 }
 
-// ── Task 9 ───────────────────────────────────────────────────────────────
+#[test]
+fn a_frame_with_nothing_changed_commits_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    // The first draw's slot is released too, so the second draw reuses it
+    // at age 1 rather than the other, never-drawn slot: a never-drawn
+    // slot's age is 0, which `render::Scenes` always treats as "the whole
+    // window", so nothing-changed could never be demonstrated on it.
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    // A second configure of the same size kicks a Frame; render's scissor
+    // is empty, so nothing is attached or committed.
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(320);
+        w.int(200);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(2));
+    f.turn();
+    let s = shape(&mut f);
+    assert_eq!(s, vec![(XDG, op::ACK_CONFIGURE)]);
+    assert!(log(&f).contains(&format!("Frame {win:?}")), "{:?}", log(&f));
+}
+
+#[test]
+fn a_configure_at_a_new_size_draws_though_the_first_request_is_still_pending() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    // A window its own layout sizes asks `window` for a frame before the
+    // compositor has configured anything, and `window` lets one request
+    // stand per window until a `Frame` answers it. So the configure must
+    // kick even though it changes the size: every later `RequestFrame`,
+    // the relayout's included, is swallowed until something does.
+    let win = spawn(
+        &mut f,
+        LayoutStyle::default().column().size(px(200.0), px(100.0)),
+    );
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(320);
+        w.int(200);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    let s = shape(&mut f);
+    assert!(
+        !s.contains(&(SURFACE, op::ATTACH)),
+        "the queue is still the old size, so that frame draws nothing: {s:?}"
+    );
+    assert!(
+        log(&f).contains(&format!("Frame {win:?}")),
+        "but the frame ran, which is what clears the window's pending bit: {:?}",
+        log(&f)
+    );
+    f.app.tick();
+    f.turn();
+    assert!(
+        !attaches(&mut f).is_empty(),
+        "the relayout the configure caused draws the first frame"
+    );
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(320.0)
+    );
+}
+
+// ── scale and resize ───────────────────────────────────────────────────
 
 #[test]
 fn a_preferred_scale_rescales_the_slots_and_redraws_at_once() {
@@ -704,63 +870,7 @@ fn a_configure_to_a_new_size_waits_for_the_layout_and_draws_the_new_size() {
     );
 }
 
-#[test]
-fn close_and_closed_are_advice_at_the_window() {
-    let Some((_gpu, mut f)) = fake() else { return };
-    let win = configured(&mut f, 64, 64);
-    f.send(TOPLEVEL, ev::CLOSE, |_| {});
-    f.turn();
-    assert_eq!(log(&f).last().unwrap(), &format!("Close Some({win:?})"));
-    assert!(f.app.is_live(win), "presentation removes nothing");
-    // The second `fake()` locks the same GPU mutex; drop this one's guard
-    // first or the second `fake()` deadlocks against itself.
-    drop(f);
-    drop(_gpu);
-
-    let Some((_gpu, mut f)) = fake() else { return };
-    let root = f.app.root();
-    let role = Role::Layer(LayerRole {
-        layer: Layer::Bottom,
-        anchor: Anchor::BOTTOM,
-        exclusive_zone: -1,
-        namespace: "wall".into(),
-        keyboard_interactivity: KeyboardInteractivity::None,
-    });
-    let win = f.app.spawn_with(root, window(), (role,)).id();
-    f.app.tick();
-    f.turn();
-    f.send(XDG, ev::LAYER_CLOSED, |_| {});
-    f.turn();
-    assert_eq!(log(&f).last().unwrap(), &format!("Close Some({win:?})"));
-}
-
-#[test]
-fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {
-    let Some((_gpu, mut f)) = fake() else { return };
-    let win = configured(&mut f, 320, 200);
-    f.requests();
-    f.app.remove(win);
-    f.app.tick();
-    f.turn();
-    let s = shape(&mut f);
-    assert_eq!(
-        s,
-        vec![
-            (TOPLEVEL, op::TOPLEVEL_DESTROY),
-            (XDG, op::XDG_DESTROY),
-            (BUF_A, op::BUFFER_DESTROY),
-            (BUF_B, op::BUFFER_DESTROY),
-            (SURFACE, op::SURFACE_DESTROY),
-        ]
-    );
-    assert!(f.app.resource::<Surfaces>().surface_of(win).is_none());
-    // A late release for a destroyed buffer is ignored.
-    f.send(BUF_A, ev::RELEASE, |_| {});
-    f.turn();
-    assert!(shape(&mut f).is_empty());
-}
-
-// ── Task 7 (atlas + last_frame) ─────────────────────────────────────────
+// ── atlas and readback ─────────────────────────────────────────────────
 
 #[test]
 fn the_first_frame_holds_the_clear_colour() {
@@ -851,74 +961,60 @@ fn a_glyph_resolved_in_a_tick_is_on_the_gpu_before_that_ticks_frame() {
     let _ = w;
 }
 
-// ── final review ─────────────────────────────────────────────────────────
+// ── removal ────────────────────────────────────────────────────────────
 
 #[test]
-fn a_frame_with_nothing_changed_commits_nothing() {
+fn close_and_closed_are_advice_at_the_window() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 64, 64);
+    f.send(TOPLEVEL, ev::CLOSE, |_| {});
+    f.turn();
+    assert_eq!(log(&f).last().unwrap(), &format!("Close Some({win:?})"));
+    assert!(f.app.is_live(win), "presentation removes nothing");
+    // The second `fake()` locks the same GPU mutex; drop this one's guard
+    // first or the second `fake()` deadlocks against itself.
+    drop(f);
+    drop(_gpu);
+
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let role = Role::Layer(LayerRole {
+        layer: Layer::Bottom,
+        anchor: Anchor::BOTTOM,
+        exclusive_zone: -1,
+        namespace: "wall".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    });
+    let win = f.app.spawn_with(root, window(), (role,)).id();
+    f.app.tick();
+    f.turn();
+    f.send(XDG, ev::LAYER_CLOSED, |_| {});
+    f.turn();
+    assert_eq!(log(&f).last().unwrap(), &format!("Close Some({win:?})"));
+}
+
+#[test]
+fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {
     let Some((_gpu, mut f)) = fake() else { return };
     let win = configured(&mut f, 320, 200);
     f.requests();
-    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
-    // The first draw's slot is released too, so the second draw reuses it
-    // at age 1 rather than the other, never-drawn slot: a never-drawn
-    // slot's age is 0, which `render::Scenes` always treats as "the whole
-    // window", so nothing-changed could never be demonstrated on it.
-    f.send(BUF_A, ev::RELEASE, |_| {});
-    f.turn();
-    // A second configure of the same size kicks a Frame; render's scissor
-    // is empty, so nothing is attached or committed.
-    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
-        w.int(320);
-        w.int(200);
-        w.array(&[]);
-    });
-    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(2));
-    f.turn();
-    let s = shape(&mut f);
-    assert_eq!(s, vec![(XDG, op::ACK_CONFIGURE)]);
-    assert!(log(&f).contains(&format!("Frame {win:?}")), "{:?}", log(&f));
-}
-
-// ── Task 9 (the live path) ───────────────────────────────────────────────
-
-#[test]
-fn a_configure_at_a_new_size_draws_though_the_first_request_is_still_pending() {
-    let Some((_gpu, mut f)) = fake() else { return };
-    // A window its own layout sizes asks `window` for a frame before the
-    // compositor has configured anything, and `window` lets one request
-    // stand per window until a `Frame` answers it. So the configure must
-    // kick even though it changes the size: every later `RequestFrame`,
-    // the relayout's included, is swallowed until something does.
-    let win = spawn(
-        &mut f,
-        LayoutStyle::default().column().size(px(200.0), px(100.0)),
-    );
-    f.requests();
-    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
-        w.int(320);
-        w.int(200);
-        w.array(&[]);
-    });
-    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
-    f.turn();
-    let s = shape(&mut f);
-    assert!(
-        !s.contains(&(SURFACE, op::ATTACH)),
-        "the queue is still the old size, so that frame draws nothing: {s:?}"
-    );
-    assert!(
-        log(&f).contains(&format!("Frame {win:?}")),
-        "but the frame ran, which is what clears the window's pending bit: {:?}",
-        log(&f)
-    );
+    f.app.remove(win);
     f.app.tick();
     f.turn();
-    assert!(
-        !attaches(&mut f).is_empty(),
-        "the relayout the configure caused draws the first frame"
-    );
+    let s = shape(&mut f);
     assert_eq!(
-        f.app.component::<LayoutStyle>(win).unwrap().width,
-        px(320.0)
+        s,
+        vec![
+            (TOPLEVEL, op::TOPLEVEL_DESTROY),
+            (XDG, op::XDG_DESTROY),
+            (BUF_A, op::BUFFER_DESTROY),
+            (BUF_B, op::BUFFER_DESTROY),
+            (SURFACE, op::SURFACE_DESTROY),
+        ]
     );
+    assert!(f.app.resource::<Surfaces>().surface_of(win).is_none());
+    // A late release for a destroyed buffer is ignored.
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    assert!(shape(&mut f).is_empty());
 }
