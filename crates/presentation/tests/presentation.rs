@@ -49,17 +49,14 @@ mod op {
     pub const PARAMS_DESTROY: u16 = 0;
     pub const PARAMS_ADD: u16 = 1;
     pub const PARAMS_CREATE_IMMED: u16 = 3;
-    /// Both a buffer's and a target's teardown; the rewritten removal
-    /// test (Task 6/7) is the only user in this file so far.
-    #[allow(dead_code)]
+    /// Both a buffer's and a target's teardown; used by the scale test
+    /// here and by the removal test (Task 7).
     pub const BUFFER_DESTROY: u16 = 0;
     #[allow(dead_code)]
     pub const SURFACE_DESTROY: u16 = 0;
     pub const ATTACH: u16 = 1;
     pub const FRAME: u16 = 3;
     pub const COMMIT: u16 = 6;
-    /// Only the rewritten preferred-scale test (Task 6/7) sends this.
-    #[allow(dead_code)]
     pub const SET_BUFFER_SCALE: u16 = 8;
     pub const DAMAGE_BUFFER: u16 = 9;
     pub const GET_XDG_SURFACE: u16 = 2;
@@ -92,8 +89,6 @@ mod ev {
     pub const LAYER_CLOSED: u16 = 1;
     pub const DONE: u16 = 0;
     pub const RELEASE: u16 = 0;
-    /// Only the rewritten preferred-scale test (Task 6/7) sends this.
-    #[allow(dead_code)]
     pub const PREFERRED_SCALE: u16 = 2;
     pub const DMABUF_MODIFIER: u16 = 1;
 }
@@ -579,8 +574,120 @@ fn two_configures_in_one_turn_draw_one_frame() {
 // ── Task 9 ───────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "rewritten in Task 6/7"]
-fn a_preferred_scale_rescales_the_buffers_and_redraws() {}
+fn a_preferred_scale_rescales_the_slots_and_redraws_at_once() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.turn();
+    f.requests();
+    f.send(SURFACE, ev::PREFERRED_SCALE, |w| w.int(2));
+    f.turn();
+    let reqs = f.requests();
+    let s: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    // Old buffers destroyed, two new slots made, then the frame at scale 2.
+    assert_eq!(
+        &s[..2],
+        &[(BUF_A, op::BUFFER_DESTROY), (BUF_B, op::BUFFER_DESTROY)]
+    );
+    // `zwp_linux_buffer_params_v1.create_immed` and `wl_surface.frame` are
+    // both opcode 3 in the real protocol, and the kick draws a frame in
+    // this same turn, so the opcode alone is ambiguous: exclude `SURFACE`.
+    let immed: Vec<&wayland::fake::Request> = reqs
+        .iter()
+        .filter(|r| r.opcode == op::PARAMS_CREATE_IMMED && r.sender != ObjectId(SURFACE))
+        .collect();
+    assert_eq!(immed.len(), 2);
+    let mut r = immed[0].reader();
+    r.object();
+    assert_eq!(
+        (r.int(), r.int()),
+        (Some(640), Some(400)),
+        "device pixels at scale 2"
+    );
+    let tail: Vec<(u32, u16)> = s[s.len() - 5..].to_vec();
+    assert_eq!(
+        tail,
+        vec![
+            (SURFACE, op::SET_BUFFER_SCALE),
+            (SURFACE, op::ATTACH),
+            (SURFACE, op::DAMAGE_BUFFER),
+            (SURFACE, op::FRAME),
+            (SURFACE, op::COMMIT),
+        ]
+    );
+    let mut dmg = reqs[reqs.len() - 3].reader();
+    assert_eq!(
+        (dmg.int(), dmg.int(), dmg.int(), dmg.int()),
+        (Some(0), Some(0), Some(640), Some(400)),
+        "the whole window at the new scale"
+    );
+    // `kick`'s `app.signal(Frame(w))` inside `on_surface` queues directly,
+    // ahead of `ScaleFactorChanged`'s `Emitted<ScaleFactorChanged>`, which
+    // only reaches the signal queue after the event that carried it is
+    // fully flushed: the same ordering Task 5 hit with `Resized`, so
+    // "Frame" logs before "Scale 2" even though `on_surface` emitted the
+    // scale change first.
+    assert_eq!(
+        log(&f),
+        vec![
+            "Resized 320x200".to_string(),
+            format!("Frame {win:?}"),
+            format!("Frame {win:?}"),
+            "Scale 2".to_string(),
+        ]
+    );
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(320.0),
+        "logical size unchanged"
+    );
+}
+
+#[test]
+fn a_configure_to_a_new_size_waits_for_the_layout_and_draws_the_new_size() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.turn();
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(400);
+        w.int(300);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(2));
+    f.turn();
+    let s = shape(&mut f);
+    assert!(
+        !s.contains(&(SURFACE, op::ATTACH)),
+        "no frame before the layout: {s:?}"
+    );
+    assert_eq!(
+        s.iter().filter(|r| r.1 == op::PARAMS_CREATE_IMMED).count(),
+        2,
+        "new slots"
+    );
+    f.app.tick();
+    f.turn();
+    let reqs = f.requests();
+    let attach = reqs
+        .iter()
+        .find(|r| r.opcode == op::ATTACH)
+        .expect("the layout's frame");
+    let dmg = reqs.iter().find(|r| r.opcode == op::DAMAGE_BUFFER).unwrap();
+    let mut d = dmg.reader();
+    assert_eq!(
+        (d.int(), d.int(), d.int(), d.int()),
+        (Some(0), Some(0), Some(400), Some(300))
+    );
+    let _ = attach;
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(400.0)
+    );
+}
 
 #[test]
 fn close_and_closed_are_advice_at_the_window() {
