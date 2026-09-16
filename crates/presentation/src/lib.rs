@@ -20,10 +20,14 @@
 //!   commits nothing. The callback's `done` and a buffer's `release` each
 //!   try again.
 //! - A configure settles the size and, when the device size changed,
-//!   replaces the two slots. It kicks a frame only when the settled size
-//!   is already the layout's; otherwise the layout change it causes
-//!   requests the frame, so the first frame at a new size draws the new
-//!   layout. A preferred scale change replaces the slots and kicks.
+//!   replaces the two slots, and always kicks. It must: `window` lets one
+//!   frame request stand until a `Frame` answers it, so a configure that
+//!   declined would strand the request the window's own content raised
+//!   before the compositor ever configured it, and nothing would ever
+//!   draw. A `Frame` whose queue is still the old size draws nothing and
+//!   wants again; the layout the `Resized` causes then opens the next
+//!   cycle, which draws at the new size. A preferred scale change
+//!   replaces the slots and kicks.
 //! - The atlas is uploaded on `OnChanged<Atlas>`, which the core queues
 //!   at `PostTick` ahead of any frame request the same tick raises.
 //! - Removal destroys the role objects, the buffers and targets, and the
@@ -402,9 +406,14 @@ fn replace_slots(
 }
 
 /// The shell configured `w`: settle the size, make slots if the device
-/// size changed, report `Resized`, and kick when the settled size is
-/// already the window's layout size (no layout change is coming to raise
-/// the frame request for us).
+/// size changed, report `Resized`, and kick. The kick is unconditional
+/// because `window` swallows every `RequestFrame` while one is pending
+/// and only a `Frame` clears that bit: the request a window raises for
+/// its own content arrives before the first configure, so a configure
+/// that declined to kick would leave it pending forever. When the size
+/// the queue was built at is not yet the slots', `on_frame` declines to
+/// draw and wants again, and the relayout this `Resized` causes requests
+/// the frame that fits.
 fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
     let layout = app
         .component::<Layout>(w)
@@ -450,9 +459,7 @@ fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
         entry.wanting = true;
     }
     app.emit(Resized { size }, w);
-    if size == layout {
-        kick(app, w);
-    }
+    kick(app, w);
 }
 
 /// The one decision: configured, no callback outstanding, a slot free

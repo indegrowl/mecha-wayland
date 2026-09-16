@@ -373,7 +373,15 @@ fn a_configure_acks_makes_two_dmabuf_slots_and_the_layout_frame_draws() {
     assert_eq!(immed.object(), Some(ObjectId(BUF_A)));
     assert_eq!((immed.int(), immed.int()), (Some(320), Some(200)));
     assert_eq!(immed.uint(), Some(XRGB));
-    assert_eq!(log(&f), vec!["Resized 320x200".to_string()]);
+    // The configure kicks whatever the layout says, and that frame draws
+    // nothing: the queue is still the old size. It must kick — `window`
+    // lets one frame request stand per window until a `Frame` answers it.
+    // `Frame` logs before `Resized` for the ordering reason the scale test
+    // spells out: `kick`'s signal queues ahead of the emitted event.
+    assert_eq!(
+        log(&f),
+        vec![format!("Frame {win:?}"), "Resized 320x200".to_string()]
+    );
     assert!(f.app.resource::<Surfaces>().is_configured(win));
     assert_eq!(
         f.app.component::<LayoutStyle>(win).unwrap().width,
@@ -403,7 +411,11 @@ fn a_configure_acks_makes_two_dmabuf_slots_and_the_layout_frame_draws() {
     assert_eq!(reqs[2].reader().object(), Some(ObjectId(CALLBACK)));
     assert_eq!(
         log(&f),
-        vec!["Resized 320x200".to_string(), format!("Frame {win:?}")]
+        vec![
+            format!("Frame {win:?}"),
+            "Resized 320x200".to_string(),
+            format!("Frame {win:?}"),
+        ]
     );
 }
 
@@ -440,7 +452,7 @@ fn a_zero_configure_settles_on_the_layout_size_and_draws_at_once() {
 #[test]
 fn a_zero_configure_with_no_layout_size_takes_the_default() {
     let Some((_gpu, mut f)) = fake() else { return };
-    spawn(&mut f, LayoutStyle::default().column());
+    let win = spawn(&mut f, LayoutStyle::default().column());
     f.requests();
     f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
         w.int(0);
@@ -449,7 +461,12 @@ fn a_zero_configure_with_no_layout_size_takes_the_default() {
     });
     f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
     f.turn();
-    assert_eq!(log(&f), vec!["Resized 640x480".to_string()]);
+    // The configure's own kick draws nothing at the old size; the
+    // relayout's frame follows a tick later.
+    assert_eq!(
+        log(&f),
+        vec![format!("Frame {win:?}"), "Resized 640x480".to_string(),]
+    );
     let reqs = f.requests();
     let immed = reqs
         .iter()
@@ -628,6 +645,7 @@ fn a_preferred_scale_rescales_the_slots_and_redraws_at_once() {
     assert_eq!(
         log(&f),
         vec![
+            format!("Frame {win:?}"),
             "Resized 320x200".to_string(),
             format!("Frame {win:?}"),
             format!("Frame {win:?}"),
@@ -859,4 +877,48 @@ fn a_frame_with_nothing_changed_commits_nothing() {
     let s = shape(&mut f);
     assert_eq!(s, vec![(XDG, op::ACK_CONFIGURE)]);
     assert!(log(&f).contains(&format!("Frame {win:?}")), "{:?}", log(&f));
+}
+
+// ── Task 9 (the live path) ───────────────────────────────────────────────
+
+#[test]
+fn a_configure_at_a_new_size_draws_though_the_first_request_is_still_pending() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    // A window its own layout sizes asks `window` for a frame before the
+    // compositor has configured anything, and `window` lets one request
+    // stand per window until a `Frame` answers it. So the configure must
+    // kick even though it changes the size: every later `RequestFrame`,
+    // the relayout's included, is swallowed until something does.
+    let win = spawn(
+        &mut f,
+        LayoutStyle::default().column().size(px(200.0), px(100.0)),
+    );
+    f.requests();
+    f.send(TOPLEVEL, ev::TOPLEVEL_CONFIGURE, |w| {
+        w.int(320);
+        w.int(200);
+        w.array(&[]);
+    });
+    f.send(XDG, ev::XDG_CONFIGURE, |w| w.uint(1));
+    f.turn();
+    let s = shape(&mut f);
+    assert!(
+        !s.contains(&(SURFACE, op::ATTACH)),
+        "the queue is still the old size, so that frame draws nothing: {s:?}"
+    );
+    assert!(
+        log(&f).contains(&format!("Frame {win:?}")),
+        "but the frame ran, which is what clears the window's pending bit: {:?}",
+        log(&f)
+    );
+    f.app.tick();
+    f.turn();
+    assert!(
+        !attaches(&mut f).is_empty(),
+        "the relayout the configure caused draws the first frame"
+    );
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(320.0)
+    );
 }
