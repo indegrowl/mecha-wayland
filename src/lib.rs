@@ -2,10 +2,6 @@
 //! Each member crate's prelude is folded into [`prelude`] as it is rewritten
 //! against the new `app` core.
 
-// `atlas` and `gles` each have their own `Error` and `Plane`; the facade
-// carries both, so an unqualified use of either name is ambiguous here
-// and wants an `atlas::` or `gles::` prefix.
-#[allow(ambiguous_glob_reexports)]
 pub mod prelude {
     pub use app::prelude::*;
     pub use atlas::prelude::*;

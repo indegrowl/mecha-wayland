@@ -23,8 +23,10 @@
 //!   write and no blending and the translucent pass with depth test and
 //!   premultiplied blending: one instanced draw of the whole pass per
 //!   damage rect. No texture is bound inside a frame.
-//! - Everything is device pixels; y is flipped into GL once in the
-//!   vertex shader, and `z` maps to depth so higher is nearer.
+//! - Everything is device pixels, y included: GL row 0 is the buffer's
+//!   first row, which is the row the compositor reads as the top, so
+//!   nothing is flipped anywhere — not in the vertex shader, not in the
+//!   scissor, not in the readback. `z` maps to depth so higher is nearer.
 //!
 //! # Quick start
 //!
@@ -58,8 +60,11 @@ mod textures;
 
 pub use target::{Plane, Target, XRGB8888};
 
+/// `Error` and `Plane` are left out: `atlas` has its own of each, and a
+/// facade folding both preludes together would make neither name usable.
+/// Take them by path, as `gles::Error` and `gles::Plane`.
 pub mod prelude {
-    pub use crate::{Budget, Device, Error, Plane, Target, XRGB8888};
+    pub use crate::{Budget, Device, Target, XRGB8888};
 }
 
 /// How many atlas pages of each kind the device allocates room for, once,
