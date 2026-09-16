@@ -1,0 +1,9 @@
+[package]
+name = "gles"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gbm.workspace = true
+glow.workspace = true
+khronos-egl.workspace = true
