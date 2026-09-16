@@ -358,6 +358,7 @@ dependencies = [
  "app",
  "atlas",
  "geometry",
+ "gles",
  "layout",
  "paint",
  "presentation",

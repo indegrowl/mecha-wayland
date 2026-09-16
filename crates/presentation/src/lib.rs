@@ -14,21 +14,24 @@
 //! - The frame loop: `FrameRequested` marks the window wanting; when it
 //!   is configured, no callback is outstanding and a slot is free, this
 //!   module signals `Frame`. Its own `Frame` system runs last of all: it
-//!   asks `render::Scenes` for the free slot's age, draws the queue with
-//!   the `gles::Device`, attaches, damages by the queue's scissor, asks
-//!   for the callback and commits. The callback's `done` and a slot's
-//!   `release` each try again. A configure that changes the window's size
-//!   does not by itself want a frame: the layout change it causes raises
-//!   the frame request through `render`. A configure that settles back to
-//!   the current layout size does, since nothing else would.
-//! - Removal destroys the role objects, the slots and their targets, and
-//!   the surface. [`Surfaces`] is the module's own state, readable for
-//!   tests and for a later input module.
+//!   asks `Scenes::queue` for the free slot's age, draws the queue into
+//!   the slot's dmabuf through `gles`, attaches, damages each rect of the
+//!   queue's scissor, asks for the callback and commits. An empty scissor
+//!   commits nothing. The callback's `done` and a buffer's `release` each
+//!   try again.
+//! - A configure settles the size and, when the device size changed,
+//!   replaces the two slots. It kicks a frame only when the settled size
+//!   is already the layout's; otherwise the layout change it causes
+//!   requests the frame, so the first frame at a new size draws the new
+//!   layout. A preferred scale change replaces the slots and kicks.
+//! - The atlas is uploaded on `OnChanged<Atlas>`, which the core queues
+//!   at `PostTick` ahead of any frame request the same tick raises.
+//! - Removal destroys the role objects, the buffers and targets, and the
+//!   surface.
 //!
-//! Installs last of everything, after `WindowModule`, `RenderModule` and
-//! `WaylandModule`, which must have bound `WlCompositor`,
-//! `ZwpLinuxDmabufV1` and `XdgWmBase`. The layer shell is bound here if
-//! the compositor offers it; the GPU is opened here too.
+//! Installs last of everything, after `RenderModule` and `WaylandModule`,
+//! which must have bound `WlCompositor`, `ZwpLinuxDmabufV1` and
+//! `XdgWmBase`. Opens the GPU at install; no GPU is a panic.
 //!
 //! # Quick start
 //!

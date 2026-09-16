@@ -1,7 +1,54 @@
 #![deny(unsafe_code)]
 //! The GLES 3.0 backend: one device, the atlas resident on it, dmabuf
-//! render targets, and the draw of a `render::Queue`. Crate docs are
-//! completed in the last task of the slice.
+//! render targets, and the draw of a `render::Queue`.
+//!
+//! # Model
+//!
+//! - [`Device::open`] takes the first render node, a GBM device, an EGL
+//!   display over it and a GLES 3.0 context, current on the calling
+//!   thread for the device's life. No GPU, or no 3.0, is a panic.
+//! - The atlas lives in two array textures allocated once from a
+//!   [`Budget`] and never rebound: glyph and icon pages as layers of an
+//!   `R8` array on unit 0, image pages as layers of an `RGBA8` array on
+//!   unit 1, five levels each. A page table maps an `AtlasId` to its
+//!   class and layer in a uniform. [`Device::upload`] gives new pages a
+//!   layer and sends dirty cells as row runs straight from page memory;
+//!   most frames upload nothing.
+//! - A [`Target`] is a dmabuf: a GBM buffer laid out by the first of the
+//!   compositor's modifiers the GPU accepts, linear otherwise, wrapped as
+//!   an EGLImage into a colour renderbuffer with a 16-bit depth
+//!   renderbuffer and one FBO. Its planes go to `zwp_linux_dmabuf_v1`.
+//! - [`Device::draw`] uploads both passes' commands as the bytes they
+//!   are, clears each damage rect, then draws the opaque pass with depth
+//!   write and no blending and the translucent pass with depth test and
+//!   premultiplied blending: one instanced draw of the whole pass per
+//!   damage rect. No texture is bound inside a frame.
+//! - Everything is device pixels; y is flipped into GL once in the
+//!   vertex shader, and `z` maps to depth so higher is nearer.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use geometry::{Color, Rect, Size};
+//! use gles::prelude::*;
+//! use render::{Pass, Queue};
+//!
+//! let mut device = Device::open(Budget::default());
+//! let target = device.target(320, 200, &[]);
+//! let queue = Queue {
+//!     size: Size::new(320.0, 200.0),
+//!     scale: 1.0,
+//!     clear: Color::rgb(0.1, 0.2, 0.3),
+//!     depth: 2.0,
+//!     scissor: vec![Rect::new(0.0, 0.0, 320.0, 200.0)],
+//!     opaque: Pass::default(),
+//!     translucent: Pass::default(),
+//! };
+//! device.draw(&target, &queue);
+//! let rgba = device.read(&target);
+//! assert_eq!(&rgba[..3], &[26, 51, 77]);
+//! device.destroy(target);
+//! ```
 
 mod draw;
 mod egl;
