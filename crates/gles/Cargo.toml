@@ -5,5 +5,10 @@ edition = "2024"
 
 [dependencies]
 gbm.workspace = true
+geometry.workspace = true
 glow.workspace = true
 khronos-egl.workspace = true
+render.workspace = true
+
+[dev-dependencies]
+png.workspace = true

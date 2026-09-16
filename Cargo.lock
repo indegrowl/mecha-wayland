@@ -228,8 +228,11 @@ name = "gles"
 version = "0.1.0"
 dependencies = [
  "gbm",
+ "geometry",
  "glow",
  "khronos-egl",
+ "png 0.18.1",
+ "render",
 ]
 
 [[package]]

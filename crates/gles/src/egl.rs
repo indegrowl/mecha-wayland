@@ -20,10 +20,6 @@ pub(crate) type Egl = egl::DynamicInstance<egl::EGL1_5>;
 pub(crate) type ImageTargetRenderbuffer =
     unsafe extern "system" fn(target: u32, image: *const c_void);
 
-// `gbm`, `gl` and `image_target_renderbuffer` are read by later tasks in
-// this slice (targets, the program, the draw); nothing in this task reads
-// them yet.
-#[allow(dead_code)]
 pub(crate) struct Gpu {
     pub(crate) egl: Egl,
     pub(crate) display: egl::Display,
