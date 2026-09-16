@@ -3,8 +3,6 @@
 //! render targets, and the draw of a `render::Queue`. Crate docs are
 //! completed in the last task of the slice.
 
-use glow::HasContext;
-
 mod draw;
 mod egl;
 mod program;
@@ -155,13 +153,6 @@ fn q_commands(q: &render::Queue) -> impl Iterator<Item = &render::Command> {
 impl Drop for Device {
     fn drop(&mut self) {
         self.textures.drop_with(&self.gpu);
-        #[allow(unsafe_code)]
-        // SAFETY: objects this crate made; the context is still current
-        // and `gpu` has not dropped yet, as it is the struct's last field.
-        unsafe {
-            self.gpu.gl.delete_program(self.program.program);
-            self.gpu.gl.delete_vertex_array(self.program.vao);
-            self.gpu.gl.delete_buffer(self.program.vbo);
-        }
+        self.program.drop_with(&self.gpu);
     }
 }

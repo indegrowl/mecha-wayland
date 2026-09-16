@@ -238,4 +238,14 @@ impl Program {
             gl.vertex_attrib_pointer_i32(9, 1, glow::UNSIGNED_INT, S, base + 120);
         }
     }
+
+    /// Deletes the program, its VAO and its VBO.
+    pub(crate) fn drop_with(&self, gpu: &Gpu) {
+        // SAFETY: objects this module made.
+        unsafe {
+            gpu.gl.delete_program(self.program);
+            gpu.gl.delete_vertex_array(self.vao);
+            gpu.gl.delete_buffer(self.vbo);
+        }
+    }
 }
