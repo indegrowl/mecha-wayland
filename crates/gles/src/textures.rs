@@ -3,7 +3,7 @@
 //! layer, and the upload of dirty cells in row runs.
 #![allow(unsafe_code)]
 
-use atlas::{Atlas, AtlasId, CELL, Class, PAGE, Page};
+use atlas::{Atlas, AtlasId, CELL, Class, PAGE};
 use glow::HasContext;
 
 use crate::Budget;
@@ -41,11 +41,11 @@ pub(crate) struct Textures {
 /// (`for<'r> FnMut(&'r Page, Cell)`, since the signature elides the
 /// lifetime): the reference is only valid for that one call, so it
 /// cannot sit in a variable that survives to the next call. `page` is
-/// kept as a raw pointer instead, valid for as long as `upload`'s
-/// `&Atlas` borrow lives: `drain_dirty` only reads, so no page moves or
-/// frees while it runs.
+/// kept by `AtlasId` instead, a plain value with no lifetime; `flush`
+/// looks the page back up through `atlas.pages()`, a second shared
+/// borrow alongside `drain_dirty`'s own.
 struct Run {
-    page: *const Page,
+    page: AtlasId,
     layer: u32,
     row: u8,
     col: u8,
@@ -156,20 +156,21 @@ impl Textures {
 
         let mut run: Option<Run> = None;
         atlas.drain_dirty(|page, cell| {
-            let ptr = page as *const Page;
             let layer = self.pages[page.id().0 as usize]
                 .expect("every page has a layer")
                 .1;
             match &mut run {
-                Some(r) if r.page == ptr && r.row == cell.row && r.col + r.count == cell.col => {
+                Some(r)
+                    if r.page == page.id() && r.row == cell.row && r.col + r.count == cell.col =>
+                {
                     r.count += 1;
                 }
                 _ => {
                     if let Some(r) = run.take() {
-                        self.flush(gpu, r);
+                        self.flush(gpu, atlas, r);
                     }
                     run = Some(Run {
-                        page: ptr,
+                        page: page.id(),
                         layer,
                         row: cell.row,
                         col: cell.col,
@@ -179,17 +180,18 @@ impl Textures {
             }
         });
         if let Some(r) = run.take() {
-            self.flush(gpu, r);
+            self.flush(gpu, atlas, r);
         }
     }
 
     /// One `glTexSubImage3D` per level of the run, straight from the
     /// page's memory through unpack row length and skip.
-    fn flush(&mut self, gpu: &Gpu, r: Run) {
+    fn flush(&mut self, gpu: &Gpu, atlas: &Atlas, r: Run) {
         let gl = &gpu.gl;
-        // SAFETY: see `Run`: the page this run points at is still inside
-        // the atlas's storage, unmoved and unfreed, for `upload`'s call.
-        let page = unsafe { &*r.page };
+        let page = atlas
+            .pages()
+            .find(|p| p.id() == r.page)
+            .expect("a run names a live page");
         let (unit, format, levels) = match array_of(page.class()) {
             Array::Mono => (
                 0,
