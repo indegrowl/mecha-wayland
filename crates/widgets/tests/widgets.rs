@@ -180,3 +180,98 @@ fn div_context_set_radius_and_set_border_rewrite_their_own_field() {
         ))
     );
 }
+
+// ── Text ────────────────────────────────────────────────────────────────
+
+const INTER: &[u8] = include_bytes!("../../atlas/tests/fixtures/Inter-Regular.ttf");
+
+#[test]
+fn a_text_paints_a_monochrome_run_sized_to_its_content() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, "hi"));
+    app.tick();
+    match app.component::<Paint>(label).unwrap() {
+        Paint::Monochrome(sprites) => assert_eq!(sprites.len(), 2),
+        other => panic!("expected a Monochrome run, got {other:?}"),
+    }
+    assert!(rect(&app, label.id()).width() > 0.0);
+    assert!(rect(&app, label.id()).height() > 0.0);
+}
+
+#[test]
+fn text_context_set_text_reshapes_and_relayouts() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, "hi"));
+    app.tick();
+    let before = rect(&app, label.id()).width();
+    take_painted();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(label).unwrap().set_text("a much longer label");
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    let after = rect(&app, label.id()).width();
+    assert!(after > before, "a longer string is a wider box");
+    assert_eq!(take_painted(), vec![vec![label.id()]]);
+    assert_eq!(take_moved(), vec![vec![label.id()]]);
+}
+
+#[test]
+fn text_context_set_color_retints_without_reshaping_or_relayout() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, "hi").color(Color::WHITE));
+    app.tick();
+    let before = rect(&app, label.id());
+    take_painted();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(label).unwrap().set_color(Color::BLACK);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    assert_eq!(
+        take_painted(),
+        vec![vec![label.id()]],
+        "the retint is a paint change"
+    );
+    assert!(
+        take_moved().is_empty(),
+        "no relayout: the glyphs did not move"
+    );
+    assert_eq!(rect(&app, label.id()), before);
+    match app.component::<Paint>(label).unwrap() {
+        Paint::Monochrome(sprites) => {
+            assert!(sprites.iter().all(|s| s.color == Color::BLACK));
+        }
+        other => panic!("expected Monochrome, got {other:?}"),
+    }
+}
+
+#[test]
+fn empty_text_paints_an_empty_run() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, ""));
+    app.tick();
+    assert_eq!(
+        app.component::<Paint>(label),
+        Some(&Paint::Monochrome(Vec::new()))
+    );
+    assert_eq!(rect(&app, label.id()).width(), 0.0);
+}
