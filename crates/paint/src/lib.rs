@@ -63,11 +63,15 @@
 use app::{App, Component, Module};
 use geometry::{Color, Corners, Insets, Point, Size};
 
+mod context;
+
 pub use atlas::{AtlasId, AtlasTile};
+pub use context::PaintContext;
 
 pub mod prelude {
     pub use crate::{
-        AtlasId, AtlasTile, MonochromeSprite, Paint, PaintModule, PolychromeSprite, Quad,
+        AtlasId, AtlasTile, MonochromeSprite, Paint, PaintContext, PaintModule, PolychromeSprite,
+        Quad,
     };
     pub use geometry::{Color, Corners};
 }
