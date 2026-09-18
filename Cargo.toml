@@ -16,10 +16,11 @@ presentation.workspace = true
 render.workspace = true
 ring.workspace = true
 wayland.workspace = true
+widgets.workspace = true
 window.workspace = true
 
 [workspace]
-members = ["crates/app", "crates/atlas", "crates/geometry", "crates/gles", "crates/layout", "crates/paint", "crates/presentation", "crates/render", "crates/ring", "crates/wayland", "crates/window"]
+members = ["crates/app", "crates/atlas", "crates/geometry", "crates/gles", "crates/layout", "crates/paint", "crates/presentation", "crates/render", "crates/ring", "crates/wayland", "crates/widgets", "crates/window"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -33,6 +34,7 @@ presentation = { path = "crates/presentation" }
 render = { path = "crates/render" }
 ring = { path = "crates/ring" }
 wayland = { path = "crates/wayland" }
+widgets = { path = "crates/widgets" }
 window = { path = "crates/window" }
 bitflags = "2"
 fontdue = "0.9"
