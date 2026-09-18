@@ -88,8 +88,10 @@ impl Widget for Text {
 /// One line of `text` in `font` at `px`, tinted `color`: a sprite per
 /// glyph with ink, pen-advanced left to right, baselined by the font's
 /// ascent, and the line's natural size (`pen` wide, `ascent - descent +
-/// gap` tall). A character the font has no glyph for advances the pen
-/// with nothing to paint, the same as a space.
+/// gap` tall). A character missing from the font's cmap is skipped
+/// entirely — it contributes no width and no sprite, as if it were never
+/// in the string. A character present in the cmap but with no ink (such
+/// as a space) still advances the pen; only the sprite is skipped.
 fn shape(
     atlas: &mut Atlas,
     font: FontId,
@@ -217,6 +219,27 @@ mod tests {
         assert!(
             size.height > 0.0,
             "the line height does not depend on content"
+        );
+    }
+
+    #[test]
+    fn shape_skips_a_character_missing_from_the_cmap_and_contributes_no_width() {
+        let (mut atlas, font) = inter();
+        // U+4E2D ('中') is not in Inter-Regular's cmap.
+        assert!(
+            atlas.lookup(&[font], '\u{4e2d}').is_none(),
+            "test assumes Inter-Regular has no glyph for U+4E2D"
+        );
+        let (with_missing, wider) = shape(&mut atlas, font, 14, "a\u{4e2d}b", Color::WHITE);
+        let (_, narrower) = shape(&mut atlas, font, 14, "ab", Color::WHITE);
+        assert_eq!(
+            with_missing.len(),
+            2,
+            "the missing character paints no sprite"
+        );
+        assert_eq!(
+            wider.width, narrower.width,
+            "a character missing from the cmap contributes zero width, unlike a space"
         );
     }
 
