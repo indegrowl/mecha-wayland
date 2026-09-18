@@ -64,6 +64,7 @@
 //! assert_eq!(app.component::<Layout>(panel).unwrap().rect.width(), 80.0);
 //! ```
 
+mod context;
 mod style;
 mod tree;
 
@@ -76,6 +77,7 @@ use taffy::geometry::Size as TSize;
 use taffy::style_helpers::TaffyMaxContent;
 use taffy::{compute_root_layout, round_layout};
 
+pub use context::StyleContext;
 pub use style::{
     Align, Direction, Display, Justify, LayoutStyle, Position, Val, Wrap, auto, percent, px,
 };
@@ -85,7 +87,8 @@ use tree::{LayoutTree, taffy_id};
 pub mod prelude {
     pub use crate::{
         Align, Available, Constraints, Direction, Display, Justify, Layout, LayoutDone,
-        LayoutModule, LayoutRoot, LayoutStyle, Measure, Position, Val, Wrap, auto, percent, px,
+        LayoutModule, LayoutRoot, LayoutStyle, Measure, Position, StyleContext, Val, Wrap, auto,
+        percent, px,
     };
 }
 

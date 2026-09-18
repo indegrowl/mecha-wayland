@@ -844,3 +844,68 @@ fn asymmetric_padding_and_border_inset_each_side_on_its_own() {
         "the child fills the content box"
     );
 }
+
+// ── StyleContext through a real dispatch ────────────────────────────────
+
+struct Poke;
+impl Event for Poke {}
+
+struct Editable;
+struct EditableBuilder(Box<dyn FnMut(&mut Context<'_, Editable>) -> bool>);
+impl Build for EditableBuilder {
+    type Widget = Editable;
+}
+impl Widget for Editable {
+    type Builder = EditableBuilder;
+    fn build(b: EditableBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+        let mut action = b.0;
+        s.on::<Poke>(me, move |ctx, _| {
+            let _ = action(ctx);
+        });
+        Editable
+    }
+}
+
+fn editable(
+    app: &mut App,
+    parent: NodeId,
+    style: LayoutStyle,
+    action: impl FnMut(&mut Context<'_, Editable>) -> bool + 'static,
+) -> NodeId {
+    app.spawn_with(parent, EditableBuilder(Box::new(action)), (style,))
+        .id()
+}
+
+fn poke(app: &mut App, id: NodeId) {
+    app.emit(Poke, id);
+    app.flush();
+}
+
+#[test]
+fn set_width_moves_the_box_once_and_a_repeat_call_writes_nothing() {
+    let mut app = app();
+    let root_id = root(&mut app, 100.0, 100.0);
+    let leaf = editable(&mut app, root_id, LayoutStyle::default(), |ctx| {
+        ctx.set_width(px(30.0))
+    });
+
+    app.tick();
+    take_moved();
+    take_restyled();
+
+    poke(&mut app, leaf);
+    app.tick();
+    assert_eq!(rect(&app, leaf).width(), 30.0);
+    assert_eq!(take_moved(), vec![vec![leaf]], "the box moved");
+    assert!(
+        take_restyled().is_empty(),
+        "OnChanged<LayoutStyle> never fires while LayoutModule is installed"
+    );
+
+    poke(&mut app, leaf);
+    app.tick();
+    assert!(
+        take_moved().is_empty(),
+        "the same width again writes nothing, so nothing to lay out"
+    );
+}
