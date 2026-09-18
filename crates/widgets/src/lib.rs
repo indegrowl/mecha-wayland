@@ -3,4 +3,10 @@
 //! `Paint` itself. See
 //! `docs/superpowers/specs/2026-09-18-widgets-design.md` for the design.
 
-pub mod prelude {}
+mod div;
+
+pub use div::{Div, DivBuilder, DivContext, div};
+
+pub mod prelude {
+    pub use crate::{Div, DivBuilder, DivContext, div};
+}
