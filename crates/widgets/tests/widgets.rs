@@ -509,3 +509,25 @@ fn image_context_set_sprite_changes_the_box_and_keeps_the_look() {
     }
     assert_eq!(take_moved(), vec![vec![photo.id()]]);
 }
+
+// ── StyleContext reaches a real widget here too ─────────────────────────
+
+#[test]
+fn style_context_reaches_a_div_through_its_context() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let panel: Handle<Div> = app.spawn(root, div());
+    app.tick();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(panel).unwrap().set_width(px(50.0));
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    assert_eq!(rect(&app, panel.id()).width(), 50.0);
+    assert_eq!(take_moved(), vec![vec![panel.id()]]);
+}
