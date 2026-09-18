@@ -4,7 +4,7 @@ use app::{Build, Context, Handle, Spawner, Widget};
 use atlas::{Atlas, AtlasTile, SpriteId};
 use geometry::{Color, Point, Size};
 use layout::{LayoutStyle, Measure};
-use paint::{MonochromeSprite, Paint};
+use paint::{MonochromeSprite, Paint, PaintContext};
 
 pub struct Icon {
     tile: AtlasTile,
@@ -71,8 +71,6 @@ impl Widget for Icon {
         }
     }
 }
-
-use paint::PaintContext;
 
 pub trait IconContext {
     fn set_color(&mut self, color: Color);

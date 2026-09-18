@@ -5,7 +5,7 @@ use app::{Build, Context, Handle, Spawner, Widget};
 use atlas::{Atlas, FontId};
 use geometry::{Color, Point, Size};
 use layout::{LayoutStyle, Measure};
-use paint::{MonochromeSprite, Paint};
+use paint::{MonochromeSprite, Paint, PaintContext};
 
 pub struct Text {
     font: FontId,
@@ -121,8 +121,6 @@ fn shape(
     let height = line.ascent - line.descent + line.gap;
     (sprites, Size::new(pen, height))
 }
-
-use paint::PaintContext;
 
 pub trait TextContext {
     fn set_text(&mut self, text: impl Into<String>);

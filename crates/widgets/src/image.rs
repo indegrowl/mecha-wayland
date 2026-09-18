@@ -5,7 +5,7 @@ use app::{Build, Context, Handle, Spawner, Widget};
 use atlas::{Atlas, AtlasTile, SpriteId};
 use geometry::Corners;
 use layout::{LayoutStyle, Measure};
-use paint::{Paint, PolychromeSprite};
+use paint::{Paint, PaintContext, PolychromeSprite};
 
 pub struct Image {
     tile: AtlasTile,
@@ -88,8 +88,6 @@ impl Widget for Image {
         }
     }
 }
-
-use paint::PaintContext;
 
 pub trait ImageContext {
     /// Swaps to a different already-inserted sprite; rewrites `Measure`

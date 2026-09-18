@@ -1,7 +1,18 @@
 //! The `widgets` crate: `Div`, `Text`, `Icon`, `Image` — the primitive
 //! widgets a spawn site names instead of hand-writing `LayoutStyle` and
-//! `Paint` itself. See
-//! `docs/superpowers/specs/2026-09-18-widgets-design.md` for the design.
+//! `Paint` itself.
+//!
+//! # Model
+//!
+//! - The four widgets write only `LayoutStyle`, `Measure` and `Paint` —
+//!   columns `layout` and `paint` already register. `widgets` installs
+//!   no `Module`, `Component` or `Resource` of its own.
+//! - Using any widget requires the caller to have installed
+//!   `LayoutModule` and `PaintModule` and inserted an `Atlas` resource.
+//! - Mutation after spawn happens through each widget's own `*Context`
+//!   trait ([`DivContext`], [`TextContext`], [`IconContext`],
+//!   [`ImageContext`]), plus the generic `layout::StyleContext` and
+//!   `paint::PaintContext`, which apply to every widget.
 //!
 //! # Quick start
 //!

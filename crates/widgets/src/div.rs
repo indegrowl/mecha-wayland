@@ -5,10 +5,13 @@
 use app::{Build, Context, Handle, Spawner, Widget};
 use geometry::{Color, Corners, Insets};
 use layout::LayoutStyle;
-use paint::{Paint, Quad};
+use paint::{Paint, PaintContext, Quad};
 
 pub struct Div;
 
+/// A `Div`'s look (`DivContext::set_radius`/`set_radii`/`set_border`) is
+/// read back from its current `Paint`, not cached separately — see
+/// `DivContext`'s doc comment for the tradeoff that implies.
 pub fn div() -> DivBuilder {
     DivBuilder {
         style: LayoutStyle::default(),
@@ -82,8 +85,17 @@ fn quad_of(paint: &Paint) -> Quad {
     }
 }
 
-use paint::PaintContext;
-
+/// A `Div`'s look is read back from its current `Paint`, not cached
+/// separately (unlike `Icon`/`Image`, which keep their own fields): if a
+/// `Div`'s quad is currently invisible (`Paint::None` — e.g. no
+/// background colour set, since `Quad::is_invisible` only looks at
+/// colour and border, not radii), a subsequent `set_radius`/`set_radii`/
+/// `set_border` call has no prior quad to build on and starts from
+/// `Quad::default()`, discarding any radius or border set earlier (at
+/// build, via `.radius(..)`/`.border(..)`, or from a since-overwritten
+/// `Paint`). Call `.background(..)` (at build) or `set_background(..)`
+/// (via this trait) first if you intend to layer visual properties onto
+/// a `Div`.
 pub trait DivContext {
     fn set_background(&mut self, color: Color);
     fn set_radius(&mut self, radius: f32);

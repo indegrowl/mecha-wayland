@@ -181,6 +181,30 @@ fn div_context_set_radius_and_set_border_rewrite_their_own_field() {
     );
 }
 
+#[test]
+fn div_context_set_radii_writes_per_corner_values_and_fires_on_change() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let panel: Handle<Div> = app.spawn(root, div().background(Color::BLACK));
+    app.tick();
+    take_painted();
+
+    let radii = Corners::new(1.0, 2.0, 3.0, 4.0);
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(panel).unwrap().set_radii(radii);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    match app.component::<Paint>(panel).unwrap() {
+        Paint::Quad(q) => assert_eq!(q.radii, radii),
+        other => panic!("expected Quad, got {other:?}"),
+    }
+    assert_eq!(take_painted(), vec![vec![panel.id()]]);
+}
+
 // ── Text ────────────────────────────────────────────────────────────────
 
 const INTER: &[u8] = include_bytes!("../../atlas/tests/fixtures/Inter-Regular.ttf");
@@ -260,6 +284,45 @@ fn text_context_set_color_retints_without_reshaping_or_relayout() {
         }
         other => panic!("expected Monochrome, got {other:?}"),
     }
+
+    // An equal colour is a no-op write: no second OnChanged<Paint>.
+    let controller2 = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(label).unwrap().set_color(Color::BLACK);
+        })),
+    );
+    poke(&mut app, controller2.id());
+    app.tick();
+    assert!(
+        take_painted().is_empty(),
+        "an equal colour fires no OnChanged<Paint>"
+    );
+}
+
+#[test]
+fn text_context_set_size_widens_the_box_and_fires_both_changes() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, "hi"));
+    app.tick();
+    let before = rect(&app, label.id()).width();
+    take_painted();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(label).unwrap().set_size(48);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    let after = rect(&app, label.id()).width();
+    assert!(after > before, "a bigger px is a wider box");
+    assert_eq!(take_painted(), vec![vec![label.id()]]);
+    assert_eq!(take_moved(), vec![vec![label.id()]]);
 }
 
 #[test]
@@ -332,6 +395,19 @@ fn icon_context_set_color_does_not_move_the_box() {
     assert!(
         take_moved().is_empty(),
         "a retint alone does not move the box"
+    );
+
+    let controller2 = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(glyph).unwrap().set_color(Color::rgb(0.0, 1.0, 0.0));
+        })),
+    );
+    poke(&mut app, controller2.id());
+    app.tick();
+    assert!(
+        take_painted().is_empty(),
+        "an equal colour fires no OnChanged<Paint>"
     );
 }
 
@@ -463,10 +539,72 @@ fn image_context_set_opacity_and_set_grayscale_change_only_their_own_field() {
         })),
     );
     poke(&mut app, controller2.id());
+    app.tick();
     match app.component::<Paint>(photo).unwrap() {
         Paint::Polychrome(p) => {
             assert!(p.grayscale);
             assert_eq!(p.opacity, 0.25, "set_grayscale did not touch opacity");
+        }
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+
+    // An equal opacity is a no-op write: no further OnChanged<Paint>.
+    take_painted();
+    let controller3 = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(photo).unwrap().set_opacity(0.25);
+        })),
+    );
+    poke(&mut app, controller3.id());
+    app.tick();
+    assert!(
+        take_painted().is_empty(),
+        "an equal opacity fires no OnChanged<Paint>"
+    );
+}
+
+#[test]
+fn image_context_set_radius_and_set_radii_change_only_radii() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = image_sprite(&mut app);
+    let photo: Handle<Image> = app.spawn(root, image(sprite).opacity(0.5).grayscale(true));
+    app.tick();
+    take_painted();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(photo).unwrap().set_radius(5.0);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => {
+            assert_eq!(p.radii, Corners::all(5.0));
+            assert_eq!(p.opacity, 0.5, "set_radius did not touch opacity");
+            assert!(p.grayscale, "set_radius did not touch grayscale");
+        }
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+    assert_eq!(take_painted(), vec![vec![photo.id()]]);
+
+    let radii = Corners::new(1.0, 2.0, 3.0, 4.0);
+    let controller2 = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(photo).unwrap().set_radii(radii);
+        })),
+    );
+    poke(&mut app, controller2.id());
+    app.tick();
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => {
+            assert_eq!(p.radii, radii);
+            assert_eq!(p.opacity, 0.5, "set_radii did not touch opacity");
+            assert!(p.grayscale, "set_radii did not touch grayscale");
         }
         other => panic!("expected Polychrome, got {other:?}"),
     }
