@@ -6,7 +6,7 @@ use std::cell::RefCell;
 
 use app::prelude::*;
 use atlas::prelude::*;
-use geometry::{Color, Rect};
+use geometry::{Color, Corners, Rect};
 use layout::prelude::*;
 use paint::prelude::*;
 use widgets::prelude::*;
@@ -384,4 +384,128 @@ fn icon_context_set_sprite_swaps_the_tile_and_keeps_color() {
         Paint::Monochrome(sprites) => assert_eq!(sprites[0].color, Color::rgb(1.0, 0.0, 0.0)),
         other => panic!("expected Monochrome, got {other:?}"),
     }
+}
+
+// ── Image ───────────────────────────────────────────────────────────────
+
+fn image_sprite(app: &mut App) -> SpriteId {
+    app.resource_mut::<Atlas>()
+        .insert(
+            Class::Image,
+            &Bitmap {
+                width: 4,
+                height: 4,
+                format: Format::Rgba8,
+                pixels: vec![255; 4 * 4 * 4],
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn an_image_paints_one_polychrome_sprite_with_the_builders_look() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = image_sprite(&mut app);
+    let photo: Handle<Image> =
+        app.spawn(root, image(sprite).radius(2.0).opacity(0.5).grayscale(true));
+    app.tick();
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => {
+            assert_eq!(p.radii, Corners::all(2.0));
+            assert_eq!(p.opacity, 0.5);
+            assert!(p.grayscale);
+        }
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+    assert_eq!(rect(&app, photo.id()).width(), 4.0);
+}
+
+#[test]
+fn image_context_set_opacity_and_set_grayscale_change_only_their_own_field() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = image_sprite(&mut app);
+    let photo: Handle<Image> = app.spawn(root, image(sprite).radius(2.0));
+    app.tick();
+    take_painted();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(photo).unwrap().set_opacity(0.25);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => {
+            assert_eq!(p.opacity, 0.25);
+            assert_eq!(
+                p.radii,
+                Corners::all(2.0),
+                "set_opacity did not touch radii"
+            );
+        }
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+    assert_eq!(take_painted(), vec![vec![photo.id()]]);
+    assert!(
+        take_moved().is_empty(),
+        "opacity alone does not move the box"
+    );
+
+    let controller2 = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(photo).unwrap().set_grayscale(true);
+        })),
+    );
+    poke(&mut app, controller2.id());
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => {
+            assert!(p.grayscale);
+            assert_eq!(p.opacity, 0.25, "set_grayscale did not touch opacity");
+        }
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+}
+
+#[test]
+fn image_context_set_sprite_changes_the_box_and_keeps_the_look() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = image_sprite(&mut app);
+    let photo: Handle<Image> = app.spawn(root, image(sprite).opacity(0.5));
+    app.tick();
+    take_moved();
+
+    let bigger = app
+        .resource_mut::<Atlas>()
+        .insert(
+            Class::Image,
+            &Bitmap {
+                width: 8,
+                height: 8,
+                format: Format::Rgba8,
+                pixels: vec![255; 8 * 8 * 4],
+            },
+        )
+        .unwrap();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(photo).unwrap().set_sprite(bigger);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    assert_eq!(rect(&app, photo.id()).width(), 8.0);
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => assert_eq!(p.opacity, 0.5, "set_sprite kept the opacity"),
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+    assert_eq!(take_moved(), vec![vec![photo.id()]]);
 }
