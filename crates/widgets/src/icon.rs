@@ -1,0 +1,154 @@
+//! `Icon`: one tinted sprite the caller already inserted into the atlas.
+
+use app::{Build, Context, Handle, Spawner, Widget};
+use atlas::{Atlas, AtlasTile, SpriteId};
+use geometry::{Color, Point, Size};
+use layout::{LayoutStyle, Measure};
+use paint::{MonochromeSprite, Paint};
+
+pub struct Icon {
+    tile: AtlasTile,
+    size: Size,
+    color: Color,
+}
+
+impl Icon {
+    pub fn color(&self) -> Color {
+        self.color
+    }
+    pub fn size(&self) -> Size {
+        self.size
+    }
+}
+
+pub fn icon(sprite: SpriteId) -> IconBuilder {
+    IconBuilder {
+        sprite,
+        style: LayoutStyle::default(),
+        color: Color::WHITE,
+    }
+}
+
+pub struct IconBuilder {
+    sprite: SpriteId,
+    style: LayoutStyle,
+    color: Color,
+}
+
+impl IconBuilder {
+    pub fn style(mut self, style: LayoutStyle) -> Self {
+        self.style = style;
+        self
+    }
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+}
+
+impl Build for IconBuilder {
+    type Widget = Icon;
+}
+
+impl Widget for Icon {
+    type Builder = IconBuilder;
+    fn build(b: IconBuilder, me: Handle<Icon>, s: &mut Spawner<'_, Icon>) -> Icon {
+        *s.component_mut::<LayoutStyle>(me).unwrap() = b.style;
+        // Atlas::sprite panics on an id this atlas did not mint: a
+        // caller bug, the same class as an unregistered component.
+        let sprite = s.resource::<Atlas>().sprite(b.sprite);
+        *s.component_mut::<Paint>(me).unwrap() = Paint::Monochrome(vec![MonochromeSprite::new(
+            sprite.tile,
+            Point::ZERO,
+            sprite.size,
+            b.color,
+        )]);
+        *s.component_mut::<Measure>(me).unwrap() = Measure::fixed(sprite.size);
+        Icon {
+            tile: sprite.tile,
+            size: sprite.size,
+            color: b.color,
+        }
+    }
+}
+
+use paint::PaintContext;
+
+pub trait IconContext {
+    fn set_color(&mut self, color: Color);
+    /// Redraws at `size` without touching the atlas: a tile is sampled
+    /// at any size up to its master, mipmapped down for anything
+    /// smaller. Also rewrites `Measure`, since the widget's own choice
+    /// of displayed size is now its natural size.
+    fn set_size(&mut self, size: Size);
+    /// Swaps to a different already-inserted sprite, keeping `color`.
+    fn set_sprite(&mut self, sprite: SpriteId);
+}
+
+impl IconContext for Context<'_, Icon> {
+    fn set_color(&mut self, color: Color) {
+        let (tile, size) = {
+            let w = self.me();
+            (w.tile, w.size)
+        };
+        self.set_paint(Paint::Monochrome(vec![MonochromeSprite::new(
+            tile,
+            Point::ZERO,
+            size,
+            color,
+        )]));
+        self.me().color = color;
+    }
+
+    fn set_size(&mut self, size: Size) {
+        let (tile, color) = {
+            let w = self.me();
+            (w.tile, w.color)
+        };
+        self.set_paint(Paint::Monochrome(vec![MonochromeSprite::new(
+            tile,
+            Point::ZERO,
+            size,
+            color,
+        )]));
+        *self.component_mut::<Measure>().unwrap() = Measure::fixed(size);
+        self.me().size = size;
+    }
+
+    fn set_sprite(&mut self, sprite: SpriteId) {
+        let color = self.me().color;
+        let sprite = self.resource::<Atlas>().sprite(sprite);
+        self.set_paint(Paint::Monochrome(vec![MonochromeSprite::new(
+            sprite.tile,
+            Point::ZERO,
+            sprite.size,
+            color,
+        )]));
+        *self.component_mut::<Measure>().unwrap() = Measure::fixed(sprite.size);
+        let w = self.me();
+        w.tile = sprite.tile;
+        w.size = sprite.size;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use geometry::Color;
+    use layout::LayoutStyle;
+
+    use super::*;
+
+    #[test]
+    fn builder_verbs_set_the_right_fields() {
+        let b = icon(SpriteId(0)).color(Color::BLACK);
+        assert_eq!(b.sprite, SpriteId(0));
+        assert_eq!(b.color, Color::BLACK);
+    }
+
+    #[test]
+    fn style_verb_replaces_the_whole_style() {
+        let style = LayoutStyle::default().column();
+        let b = icon(SpriteId(1)).style(style.clone());
+        assert_eq!(b.style, style);
+    }
+}

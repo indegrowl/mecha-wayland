@@ -275,3 +275,113 @@ fn empty_text_paints_an_empty_run() {
     );
     assert_eq!(rect(&app, label.id()).width(), 0.0);
 }
+
+// ── Icon ────────────────────────────────────────────────────────────────
+
+fn icon_sprite(app: &mut App) -> SpriteId {
+    app.resource_mut::<Atlas>()
+        .insert(
+            Class::Icon,
+            &Bitmap {
+                width: 8,
+                height: 8,
+                format: Format::R8,
+                pixels: vec![255; 64],
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn an_icon_paints_one_tinted_sprite_at_its_master_size() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = icon_sprite(&mut app);
+    let glyph: Handle<Icon> = app.spawn(root, icon(sprite).color(Color::rgb(1.0, 0.0, 0.0)));
+    app.tick();
+    match app.component::<Paint>(glyph).unwrap() {
+        Paint::Monochrome(sprites) => {
+            assert_eq!(sprites.len(), 1);
+            assert_eq!(sprites[0].color, Color::rgb(1.0, 0.0, 0.0));
+            assert_eq!(sprites[0].size, geometry::Size::new(8.0, 8.0));
+        }
+        other => panic!("expected Monochrome, got {other:?}"),
+    }
+    assert_eq!(rect(&app, glyph.id()).width(), 8.0);
+}
+
+#[test]
+fn icon_context_set_color_does_not_move_the_box() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = icon_sprite(&mut app);
+    let glyph: Handle<Icon> = app.spawn(root, icon(sprite));
+    app.tick();
+    take_painted();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(glyph).unwrap().set_color(Color::rgb(0.0, 1.0, 0.0));
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    assert_eq!(take_painted(), vec![vec![glyph.id()]]);
+    assert!(
+        take_moved().is_empty(),
+        "a retint alone does not move the box"
+    );
+}
+
+#[test]
+fn icon_context_set_size_resizes_without_touching_the_atlas() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = icon_sprite(&mut app);
+    let glyph: Handle<Icon> = app.spawn(root, icon(sprite));
+    app.tick();
+    take_moved();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(glyph)
+                .unwrap()
+                .set_size(geometry::Size::new(16.0, 16.0));
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    assert_eq!(rect(&app, glyph.id()).width(), 16.0);
+    assert_eq!(take_moved(), vec![vec![glyph.id()]]);
+}
+
+#[test]
+fn icon_context_set_sprite_swaps_the_tile_and_keeps_color() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let sprite = icon_sprite(&mut app);
+    let glyph: Handle<Icon> = app.spawn(root, icon(sprite).color(Color::rgb(1.0, 0.0, 0.0)));
+    app.tick();
+    let other_sprite = icon_sprite(&mut app);
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            ctx.at(glyph).unwrap().set_sprite(other_sprite);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+    assert_eq!(
+        rect(&app, glyph.id()).width(),
+        8.0,
+        "the new sprite's own master size"
+    );
+    match app.component::<Paint>(glyph).unwrap() {
+        Paint::Monochrome(sprites) => assert_eq!(sprites[0].color, Color::rgb(1.0, 0.0, 0.0)),
+        other => panic!("expected Monochrome, got {other:?}"),
+    }
+}
