@@ -10,6 +10,7 @@
 mod contact;
 mod contacts;
 mod events;
+mod hit_test;
 
 pub use contact::{ContactId, ContactInput, ContactPhase};
 pub use contacts::Contacts;
