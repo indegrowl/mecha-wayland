@@ -423,3 +423,34 @@ fn a_touchs_release_without_a_prior_press_still_tears_down_its_state() {
         "the entry is gone"
     );
 }
+
+// ── multiple contacts stay independent ──────────────────────────────────
+
+#[test]
+fn two_contacts_at_different_spots_stay_independent() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let left = app.spawn_with(win, Leaf, (at(0.0, 0.0, 50.0, 50.0),));
+    let right = app.spawn_with(win, Leaf, (at(100.0, 0.0, 50.0, 50.0),));
+    app.tick();
+
+    app.signal(pressed(win, ContactId::Mouse, Point::new(25.0, 25.0)));
+    app.signal(pressed(win, ContactId::Touch(7), Point::new(125.0, 25.0)));
+    app.flush();
+
+    assert_eq!(
+        take_press(),
+        vec![left.id(), win.id(), right.id(), win.id()],
+        "the mouse's Pressed dispatches fully before the touch's"
+    );
+    assert!(app.resource::<Contacts>().is_pressed(ContactId::Mouse));
+    assert!(app.resource::<Contacts>().is_pressed(ContactId::Touch(7)));
+
+    app.signal(released(win, ContactId::Mouse, Point::new(25.0, 25.0)));
+    app.flush();
+    assert!(!app.resource::<Contacts>().is_pressed(ContactId::Mouse));
+    assert!(
+        app.resource::<Contacts>().is_pressed(ContactId::Touch(7)),
+        "releasing the mouse does not touch the touch contact's capture"
+    );
+}

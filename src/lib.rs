@@ -7,6 +7,7 @@ pub mod prelude {
     pub use atlas::prelude::*;
     pub use geometry::prelude::*;
     pub use gles::prelude::*;
+    pub use interactivity::prelude::*;
     pub use layout::prelude::*;
     pub use paint::prelude::*;
     pub use presentation::prelude::*;
