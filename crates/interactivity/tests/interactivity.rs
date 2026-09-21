@@ -99,13 +99,40 @@ fn take_exit() -> Vec<NodeId> {
     EXIT.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
+thread_local! {
+    static PRESS: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
+    static RELEASE: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
+    static CLICKED: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
+}
+fn log_press(_: &mut App, e: &Emitted<Press>) {
+    PRESS.with(|l| l.borrow_mut().extend(e.targets.iter().copied()));
+}
+fn log_release(_: &mut App, e: &Emitted<Release>) {
+    RELEASE.with(|l| l.borrow_mut().extend(e.targets.iter().copied()));
+}
+fn log_clicked(_: &mut App, e: &Emitted<Clicked>) {
+    CLICKED.with(|l| l.borrow_mut().extend(e.targets.iter().copied()));
+}
+fn take_press() -> Vec<NodeId> {
+    PRESS.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+fn take_release() -> Vec<NodeId> {
+    RELEASE.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+fn take_clicked() -> Vec<NodeId> {
+    CLICKED.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
 fn app() -> App {
     let mut app = App::new();
     app.add_module(LayoutModule)
         .add_module(WindowModule)
         .add_module(InteractivityModule)
         .system(log_enter)
-        .system(log_exit);
+        .system(log_exit)
+        .system(log_press)
+        .system(log_release)
+        .system(log_clicked);
     app
 }
 
@@ -128,6 +155,31 @@ fn moved(window: impl Into<NodeId>, contact: ContactId, position: Point) -> Cont
         window: window.into(),
         contact,
         phase: ContactPhase::Moved,
+        position,
+    }
+}
+
+fn pressed(window: impl Into<NodeId>, contact: ContactId, position: Point) -> ContactInput {
+    ContactInput {
+        window: window.into(),
+        contact,
+        phase: ContactPhase::Pressed,
+        position,
+    }
+}
+fn released(window: impl Into<NodeId>, contact: ContactId, position: Point) -> ContactInput {
+    ContactInput {
+        window: window.into(),
+        contact,
+        phase: ContactPhase::Released,
+        position,
+    }
+}
+fn cancelled(window: impl Into<NodeId>, contact: ContactId, position: Point) -> ContactInput {
+    ContactInput {
+        window: window.into(),
+        contact,
+        phase: ContactPhase::Cancelled,
         position,
     }
 }
@@ -218,4 +270,127 @@ fn moving_directly_from_one_leaf_to_a_sibling_only_touches_their_own_chains() {
         "the window stayed in both hit-sets"
     );
     assert_eq!(take_enter(), vec![right.id()]);
+}
+
+// ── Pressed / Released / Cancelled: capture ─────────────────────────────
+
+#[test]
+fn press_then_release_at_the_same_spot_fires_press_release_clicked_on_the_same_set() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    app.tick();
+    let expected = vec![button.id(), card.id(), win.id()];
+
+    let p = Point::new(30.0, 30.0);
+    app.signal(pressed(win, ContactId::Mouse, p));
+    app.flush();
+    assert_eq!(take_press(), expected);
+    assert!(app.resource::<Contacts>().is_pressed(ContactId::Mouse));
+
+    app.signal(released(win, ContactId::Mouse, p));
+    app.flush();
+    assert_eq!(take_release(), expected);
+    assert_eq!(take_clicked(), expected);
+    assert!(!app.resource::<Contacts>().is_pressed(ContactId::Mouse));
+}
+
+#[test]
+fn a_capture_survives_moving_off_the_node_before_release() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    app.tick();
+    let expected = vec![button.id(), card.id(), win.id()];
+
+    app.signal(pressed(win, ContactId::Mouse, Point::new(30.0, 30.0)));
+    app.flush();
+    take_press();
+
+    app.signal(moved(win, ContactId::Mouse, Point::new(199.0, 199.0)));
+    app.flush();
+    assert_eq!(
+        take_exit(),
+        vec![button.id(), card.id()],
+        "hover left despite the capture"
+    );
+
+    app.signal(released(win, ContactId::Mouse, Point::new(199.0, 199.0)));
+    app.flush();
+    assert_eq!(
+        take_release(),
+        expected,
+        "release still targets the pressed set, not a fresh hit test"
+    );
+    assert_eq!(take_clicked(), expected);
+}
+
+#[test]
+fn cancelled_exits_the_held_set_with_no_release_or_clicked() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    app.tick();
+    let expected = vec![button.id(), card.id(), win.id()];
+
+    app.signal(pressed(win, ContactId::Mouse, Point::new(30.0, 30.0)));
+    app.flush();
+    take_press();
+
+    app.signal(cancelled(win, ContactId::Mouse, Point::new(30.0, 30.0)));
+    app.flush();
+    assert_eq!(take_exit(), expected);
+    assert!(take_release().is_empty());
+    assert!(take_clicked().is_empty());
+    assert!(!app.resource::<Contacts>().is_pressed(ContactId::Mouse));
+
+    app.signal(released(win, ContactId::Mouse, Point::new(30.0, 30.0)));
+    app.flush();
+    assert!(
+        take_release().is_empty(),
+        "nothing was captured left to release"
+    );
+}
+
+#[test]
+fn a_touchs_release_tears_down_its_state_but_the_mouse_keeps_hovering() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    app.tick();
+    let expected = vec![button.id(), card.id(), win.id()];
+    let p = Point::new(30.0, 30.0);
+
+    app.signal(moved(win, ContactId::Touch(1), p));
+    app.signal(pressed(win, ContactId::Touch(1), p));
+    app.signal(released(win, ContactId::Touch(1), p));
+    app.flush();
+    assert_eq!(take_enter(), expected);
+    assert_eq!(take_press(), expected);
+    assert_eq!(take_release(), expected);
+    assert_eq!(take_clicked(), expected);
+    assert_eq!(
+        take_exit(),
+        expected,
+        "a finger has no idle position to keep hovering at"
+    );
+    assert_eq!(
+        app.resource::<Contacts>().position(ContactId::Touch(1)),
+        None
+    );
+    assert!(!app.resource::<Contacts>().is_pressed(ContactId::Touch(1)));
+
+    app.signal(moved(win, ContactId::Mouse, p));
+    app.signal(pressed(win, ContactId::Mouse, p));
+    app.signal(released(win, ContactId::Mouse, p));
+    app.flush();
+    take_enter();
+    take_press();
+    take_release();
+    take_clicked();
+    assert!(take_exit().is_empty(), "the mouse pointer keeps its entry");
+    assert_eq!(
+        app.resource::<Contacts>().position(ContactId::Mouse),
+        Some(p)
+    );
 }
