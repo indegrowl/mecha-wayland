@@ -87,6 +87,8 @@ mod op {
     /// covered), so this opcode names a request no test sends.
     #[allow(dead_code)]
     pub const LAYER_DESTROY: u16 = 7;
+    pub const GET_POINTER: u16 = 0;
+    pub const GET_TOUCH: u16 = 2;
 }
 mod ev {
     pub const PING: u16 = 0;
@@ -99,6 +101,7 @@ mod ev {
     pub const RELEASE: u16 = 0;
     pub const PREFERRED_SCALE: u16 = 2;
     pub const DMABUF_MODIFIER: u16 = 1;
+    pub const CAPABILITIES: u16 = 0;
 }
 
 #[derive(Default)]
@@ -1020,4 +1023,39 @@ fn removing_a_window_destroys_its_objects_in_order_and_forgets_them() {
     f.send(BUF_A, ev::RELEASE, |_| {});
     f.turn();
     assert!(shape(&mut f).is_empty());
+}
+
+// ── seat ───────────────────────────────────────────────────────────────
+
+#[test]
+fn seat_capabilities_requests_pointer_and_touch_objects_once_each() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    f.requests();
+
+    f.send(SEAT, ev::CAPABILITIES, |w| {
+        w.uint(WlSeatCapability::empty().bits())
+    });
+    f.turn();
+    assert!(f.requests().is_empty(), "no capability bits, no request");
+
+    f.send(SEAT, ev::CAPABILITIES, |w| {
+        w.uint(WlSeatCapability::POINTER.bits())
+    });
+    f.turn();
+    assert_eq!(shape(&mut f), vec![(SEAT, op::GET_POINTER)]);
+
+    f.send(SEAT, ev::CAPABILITIES, |w| {
+        w.uint(WlSeatCapability::POINTER.bits())
+    });
+    f.turn();
+    assert!(
+        f.requests().is_empty(),
+        "already has a pointer, no second request"
+    );
+
+    f.send(SEAT, ev::CAPABILITIES, |w| {
+        w.uint((WlSeatCapability::POINTER | WlSeatCapability::TOUCH).bits())
+    });
+    f.turn();
+    assert_eq!(shape(&mut f), vec![(SEAT, op::GET_TOUCH)]);
 }

@@ -85,8 +85,10 @@ use render::Scenes;
 use wayland::prelude::*;
 use window::prelude::*;
 
+mod seat;
 mod slots;
 
+use seat::{Seat, on_seat};
 use slots::Slots;
 
 pub use wayland::{
@@ -253,9 +255,12 @@ impl Module for PresentationModule {
             dmabuf,
             modifiers: Vec::new(),
         });
+        let seat = *app.resource::<WlSeat>();
+        app.insert_resource(Seat::new(seat));
         app.system(on_spawned)
             .system(on_wm_base)
             .system(on_dmabuf)
+            .system(on_seat)
             .system(on_xdg_surface)
             .system(on_toplevel)
             .system(on_layer_surface)
