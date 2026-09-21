@@ -5,6 +5,8 @@
 //! needs that `interactivity::Contacts` cannot supply in time — see the
 //! design doc's "Why presentation tracks position itself".
 
+use std::collections::HashMap;
+
 use app::prelude::*;
 use geometry::Point;
 use interactivity::{ContactId, ContactInput, ContactPhase};
@@ -19,6 +21,9 @@ pub(crate) struct Seat {
     /// The window the pointer last entered, and its position there.
     /// `None` between a `Leave` and the next `Enter`.
     pointer_focus: Option<(NodeId, Point)>,
+    /// Every touch point currently down: `wl_touch`'s id to the window
+    /// it started on and its last known position.
+    touches: HashMap<i32, (NodeId, Point)>,
 }
 impl Resource for Seat {}
 
@@ -29,6 +34,7 @@ impl Seat {
             pointer: None,
             touch: None,
             pointer_focus: None,
+            touches: HashMap::new(),
         }
     }
 }
@@ -118,6 +124,78 @@ pub(crate) fn on_pointer(app: &mut App, e: &WlPointerEvent) {
                 phase: ContactPhase::Cancelled,
                 position,
             });
+        }
+        _ => {}
+    }
+}
+
+/// `wl_touch` reduced to `ContactInput`. A `Down` is two signals in
+/// order — `Moved` then `Pressed`, both at the same position —
+/// `interactivity` depends on exactly that ordering (see
+/// `ContactPhase::Moved`'s doc). `Cancel` carries no `id` at all: the
+/// protocol says it "applies to all touch points currently active on
+/// this client", so every tracked touch is cancelled at once.
+pub(crate) fn on_touch(app: &mut App, e: &WlTouchEvent) {
+    match e {
+        WlTouchEvent::Down {
+            surface, id, x, y, ..
+        } => {
+            let Some(window) = app.resource::<Surfaces>().window_of(surface.id()) else {
+                return;
+            };
+            let position = Point::new(*x, *y);
+            app.resource_mut::<Seat>()
+                .touches
+                .insert(*id, (window, position));
+            app.signal(ContactInput {
+                window,
+                contact: ContactId::Touch(*id as u32),
+                phase: ContactPhase::Moved,
+                position,
+            });
+            app.signal(ContactInput {
+                window,
+                contact: ContactId::Touch(*id as u32),
+                phase: ContactPhase::Pressed,
+                position,
+            });
+        }
+        WlTouchEvent::Motion { id, x, y, .. } => {
+            let Some((window, _)) = app.resource::<Seat>().touches.get(id).copied() else {
+                return;
+            };
+            let position = Point::new(*x, *y);
+            app.resource_mut::<Seat>()
+                .touches
+                .insert(*id, (window, position));
+            app.signal(ContactInput {
+                window,
+                contact: ContactId::Touch(*id as u32),
+                phase: ContactPhase::Moved,
+                position,
+            });
+        }
+        WlTouchEvent::Up { id, .. } => {
+            let Some((window, position)) = app.resource_mut::<Seat>().touches.remove(id) else {
+                return;
+            };
+            app.signal(ContactInput {
+                window,
+                contact: ContactId::Touch(*id as u32),
+                phase: ContactPhase::Released,
+                position,
+            });
+        }
+        WlTouchEvent::Cancel { .. } => {
+            let touches = std::mem::take(&mut app.resource_mut::<Seat>().touches);
+            for (id, (window, position)) in touches {
+                app.signal(ContactInput {
+                    window,
+                    contact: ContactId::Touch(id as u32),
+                    phase: ContactPhase::Cancelled,
+                    position,
+                });
+            }
         }
         _ => {}
     }

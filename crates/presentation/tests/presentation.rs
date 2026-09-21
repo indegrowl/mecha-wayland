@@ -107,6 +107,10 @@ mod ev {
     pub const POINTER_LEAVE: u16 = 1;
     pub const POINTER_MOTION: u16 = 2;
     pub const POINTER_BUTTON: u16 = 3;
+    pub const TOUCH_DOWN: u16 = 0;
+    pub const TOUCH_UP: u16 = 1;
+    pub const TOUCH_MOTION: u16 = 2;
+    pub const TOUCH_CANCEL: u16 = 4;
 }
 
 #[derive(Default)]
@@ -277,6 +281,15 @@ fn pointer(f: &mut Fake) -> u32 {
     });
     f.turn();
     f.expect(SEAT, op::GET_POINTER).reader().object().unwrap().0
+}
+
+/// Requests a `wl_touch` and returns its id, read off the wire.
+fn touch(f: &mut Fake) -> u32 {
+    f.send(SEAT, ev::CAPABILITIES, |w| {
+        w.uint(WlSeatCapability::TOUCH.bits())
+    });
+    f.turn();
+    f.expect(SEAT, op::GET_TOUCH).reader().object().unwrap().0
 }
 
 /// Changes the window's clear colour through a child quad, so render
@@ -1157,4 +1170,120 @@ fn a_button_or_leave_with_no_prior_enter_is_a_no_op() {
         log(&f).is_empty(),
         "no pointer_focus on record, so both are no-ops"
     );
+}
+
+#[test]
+fn touch_down_motion_up_produce_contact_input_in_order() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    let t = touch(&mut f);
+
+    f.send(t, ev::TOUCH_DOWN, |w| {
+        w.uint(1);
+        w.uint(2);
+        w.object(ObjectId(SURFACE));
+        w.int(0);
+        w.fixed(5.0);
+        w.fixed(6.0);
+    });
+    f.turn();
+    f.send(t, ev::TOUCH_MOTION, |w| {
+        w.uint(3);
+        w.int(0);
+        w.fixed(7.0);
+        w.fixed(8.0);
+    });
+    f.turn();
+    f.send(t, ev::TOUCH_UP, |w| {
+        w.uint(4);
+        w.uint(5);
+        w.int(0);
+    });
+    f.turn();
+    // A further Motion for the same, now-released id is a no-op.
+    f.send(t, ev::TOUCH_MOTION, |w| {
+        w.uint(6);
+        w.int(0);
+        w.fixed(9.0);
+        w.fixed(9.0);
+    });
+    f.turn();
+
+    assert_eq!(
+        log(&f),
+        vec![
+            format!("{win:?} Touch(0) Moved 5x6"),
+            format!("{win:?} Touch(0) Pressed 5x6"),
+            format!("{win:?} Touch(0) Moved 7x8"),
+            format!("{win:?} Touch(0) Released 7x8"),
+        ]
+    );
+}
+
+#[test]
+fn touch_cancel_ends_every_active_touch_at_once() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    let t = touch(&mut f);
+
+    f.send(t, ev::TOUCH_DOWN, |w| {
+        w.uint(1);
+        w.uint(2);
+        w.object(ObjectId(SURFACE));
+        w.int(0);
+        w.fixed(1.0);
+        w.fixed(1.0);
+    });
+    f.send(t, ev::TOUCH_DOWN, |w| {
+        w.uint(3);
+        w.uint(4);
+        w.object(ObjectId(SURFACE));
+        w.int(1);
+        w.fixed(2.0);
+        w.fixed(2.0);
+    });
+    f.turn();
+    f.send(t, ev::TOUCH_CANCEL, |_| {});
+    f.turn();
+
+    let entries = log(&f);
+    assert!(entries.contains(&format!("{win:?} Touch(0) Cancelled 1x1")));
+    assert!(entries.contains(&format!("{win:?} Touch(1) Cancelled 2x2")));
+    assert_eq!(
+        entries.iter().filter(|e| e.contains("Cancelled")).count(),
+        2
+    );
+
+    // Nothing left to cancel a second time.
+    f.send(t, ev::TOUCH_CANCEL, |_| {});
+    f.turn();
+    assert_eq!(
+        log(&f).iter().filter(|e| e.contains("Cancelled")).count(),
+        2,
+        "an empty touches map cancels nothing further"
+    );
+}
+
+#[test]
+fn a_motion_or_up_for_an_unknown_touch_id_is_a_no_op() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    let t = touch(&mut f);
+
+    f.send(t, ev::TOUCH_MOTION, |w| {
+        w.uint(1);
+        w.int(99);
+        w.fixed(1.0);
+        w.fixed(1.0);
+    });
+    f.send(t, ev::TOUCH_UP, |w| {
+        w.uint(2);
+        w.uint(3);
+        w.int(99);
+    });
+    f.turn();
+    assert!(log(&f).is_empty(), "id 99 was never seen in a Down");
 }
