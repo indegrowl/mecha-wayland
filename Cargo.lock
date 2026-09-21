@@ -477,6 +477,7 @@ dependencies = [
  "atlas",
  "geometry",
  "gles",
+ "interactivity",
  "layout",
  "paint",
  "render",
