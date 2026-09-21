@@ -38,7 +38,7 @@ fn contact_input_is_a_plain_signal() {
 
 #[test]
 fn every_event_carries_its_contact_and_position_and_reaches_its_target() {
-    struct Watcher(std::rc::Rc<std::cell::Cell<Option<ContactId>>>);
+    struct Watcher;
     struct WatcherBuilder(std::rc::Rc<std::cell::Cell<Option<ContactId>>>);
     impl Build for WatcherBuilder {
         type Widget = Watcher;
@@ -48,7 +48,7 @@ fn every_event_carries_its_contact_and_position_and_reaches_its_target() {
         fn build(b: WatcherBuilder, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
             let flag = b.0.clone();
             s.on::<Press>(me, move |_, e| flag.set(Some(e.contact)));
-            Watcher(b.0)
+            Watcher
         }
     }
 

@@ -6,6 +6,6 @@ edition = "2024"
 [dependencies]
 app.workspace = true
 geometry.workspace = true
-layout.workspace = true
+
+[dev-dependencies]
 window.workspace = true
-smallvec.workspace = true
