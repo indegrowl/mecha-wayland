@@ -8,11 +8,15 @@
 //! nodes under the contact's position.
 
 mod contact;
+mod contacts;
 mod events;
 
 pub use contact::{ContactId, ContactInput, ContactPhase};
+pub use contacts::Contacts;
 pub use events::{Clicked, Enter, Exit, Press, Release};
 
 pub mod prelude {
-    pub use crate::{Clicked, ContactId, ContactInput, ContactPhase, Enter, Exit, Press, Release};
+    pub use crate::{
+        Clicked, ContactId, ContactInput, ContactPhase, Contacts, Enter, Exit, Press, Release,
+    };
 }
