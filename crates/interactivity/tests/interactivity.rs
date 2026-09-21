@@ -123,6 +123,29 @@ fn take_clicked() -> Vec<NodeId> {
     CLICKED.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
+// A shared-order log, alongside the per-event ones above: those can't
+// express relative order between different event types, since each is
+// its own `Vec`. This one records just the event kind, in emission
+// order, across every logger below.
+thread_local! {
+    static ORDER: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+fn log_order_press(_: &mut App, _: &Emitted<Press>) {
+    ORDER.with(|l| l.borrow_mut().push("press"));
+}
+fn log_order_release(_: &mut App, _: &Emitted<Release>) {
+    ORDER.with(|l| l.borrow_mut().push("release"));
+}
+fn log_order_clicked(_: &mut App, _: &Emitted<Clicked>) {
+    ORDER.with(|l| l.borrow_mut().push("clicked"));
+}
+fn log_order_exit(_: &mut App, _: &Emitted<Exit>) {
+    ORDER.with(|l| l.borrow_mut().push("exit"));
+}
+fn take_order() -> Vec<&'static str> {
+    ORDER.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
 fn app() -> App {
     let mut app = App::new();
     app.add_module(LayoutModule)
@@ -132,7 +155,11 @@ fn app() -> App {
         .system(log_exit)
         .system(log_press)
         .system(log_release)
-        .system(log_clicked);
+        .system(log_clicked)
+        .system(log_order_press)
+        .system(log_order_release)
+        .system(log_order_clicked)
+        .system(log_order_exit);
     app
 }
 
@@ -452,5 +479,104 @@ fn two_contacts_at_different_spots_stay_independent() {
     assert!(
         app.resource::<Contacts>().is_pressed(ContactId::Touch(7)),
         "releasing the mouse does not touch the touch contact's capture"
+    );
+}
+
+// ── pinning tests from the final-review fix wave ────────────────────────
+
+#[test]
+fn a_plain_press_release_fires_press_then_release_then_clicked() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (_, _) = card_and_button(&mut app, win);
+    app.tick();
+
+    let p = Point::new(30.0, 30.0);
+    app.signal(pressed(win, ContactId::Mouse, p));
+    app.signal(released(win, ContactId::Mouse, p));
+    app.flush();
+
+    assert_eq!(take_order(), vec!["press", "release", "clicked"]);
+}
+
+#[test]
+fn cancelled_exits_the_current_hit_set_not_the_originally_captured_one() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    let other = app.spawn_with(win, Leaf, (at(150.0, 150.0, 20.0, 20.0),));
+    app.tick();
+
+    let press_pos = Point::new(30.0, 30.0);
+    let moved_pos = Point::new(155.0, 155.0);
+
+    // Press captures [button, card, win].
+    app.signal(pressed(win, ContactId::Mouse, press_pos));
+    app.flush();
+    take_press();
+
+    // Moved off to a spot with a different hit-set: state.hit becomes
+    // [other, win], but state.captured stays [button, card, win].
+    app.signal(moved(win, ContactId::Mouse, moved_pos));
+    app.flush();
+    assert_eq!(
+        take_exit(),
+        vec![button.id(), card.id()],
+        "hover left the originally pressed nodes"
+    );
+    take_enter();
+
+    app.signal(cancelled(win, ContactId::Mouse, moved_pos));
+    app.flush();
+    assert_eq!(
+        take_exit(),
+        vec![other.id(), win.id()],
+        "on_cancelled exits the post-move hit-set (.hit), not the captured one"
+    );
+    assert!(!app.resource::<Contacts>().is_pressed(ContactId::Mouse));
+}
+
+#[test]
+fn touch_release_teardown_exits_the_current_hit_set_while_release_and_clicked_use_the_captured_one()
+{
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    let other = app.spawn_with(win, Leaf, (at(150.0, 150.0, 20.0, 20.0),));
+    app.tick();
+    let captured = vec![button.id(), card.id(), win.id()];
+
+    let press_pos = Point::new(30.0, 30.0);
+    let moved_pos = Point::new(155.0, 155.0);
+
+    app.signal(moved(win, ContactId::Touch(1), press_pos));
+    app.signal(pressed(win, ContactId::Touch(1), press_pos));
+    app.flush();
+    take_enter();
+    take_press();
+
+    // Moved off before releasing: state.hit becomes [other, win], but
+    // state.captured (set at Pressed) stays [button, card, win].
+    app.signal(moved(win, ContactId::Touch(1), moved_pos));
+    app.flush();
+    take_exit();
+    take_enter();
+
+    app.signal(released(win, ContactId::Touch(1), moved_pos));
+    app.flush();
+    assert_eq!(
+        take_release(),
+        captured,
+        "Released's main dispatch still uses .captured"
+    );
+    assert_eq!(
+        take_clicked(),
+        captured,
+        "Clicked also dispatches to .captured"
+    );
+    assert_eq!(
+        take_exit(),
+        vec![other.id(), win.id()],
+        "the touch-teardown Exit reads the post-move .hit, not .captured"
     );
 }

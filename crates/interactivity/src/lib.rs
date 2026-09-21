@@ -7,6 +7,23 @@
 //! into [`Press`], [`Release`], [`Enter`], [`Exit`] and [`Clicked`] at the
 //! nodes under the contact's position.
 //!
+//! # Model
+//!
+//! - Every event dispatches deepest/frontmost-first, the contact's window
+//!   last: a preorder walk's matches, reversed.
+//! - [`Enter`]/[`Exit`] come from a fresh hit test on every `Moved`,
+//!   independent of any capture in progress.
+//! - [`Press`] locks in ("captures") the hit-set under the contact for
+//!   that press; [`Release`] and [`Clicked`] route to that captured set,
+//!   never to a fresh hit test, even if the contact moved in between.
+//! - A `Touch` contact's state is torn down right after its `Released`
+//!   (with a final `Exit` for whatever it is over at that point), since a
+//!   finger has no idle position to keep hovering at. A `Mouse` contact's
+//!   state persists across `Released` and keeps hovering.
+//! - [`Clicked`] fires unconditionally alongside `Release` in v0: there is
+//!   no check that the contact is still within the captured set's bounds
+//!   at release time.
+//!
 //! # Quick start
 //!
 //! ```

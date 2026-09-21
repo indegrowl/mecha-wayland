@@ -1,5 +1,5 @@
 //! Per-contact state. Everything but the two reads on `Contacts` is
-//! `pub(crate)`: `on_contact_input` (`module.rs`) is the only writer.
+//! `pub(crate)`: the four systems in `module.rs` are its only writers.
 
 use std::collections::HashMap;
 
@@ -15,8 +15,11 @@ pub(crate) type HitSet = SmallVec<[NodeId; 8]>;
 /// fresh every `Moved`), and — only while a button or finger is down —
 /// the set `Press`/`Release`/`Clicked` stay locked onto (`captured`).
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct ContactState {
+    /// The window this contact's input names. Recorded on every
+    /// `entry()` call for a future consumer (e.g. debug/introspection);
+    /// nothing in `src/` reads it back today, since `hit_test` is always
+    /// called with the window straight off the incoming `ContactInput`.
     pub(crate) window: NodeId,
     pub(crate) position: Point,
     pub(crate) hit: HitSet,
@@ -32,7 +35,6 @@ pub struct Contacts {
 
 impl Resource for Contacts {}
 
-#[allow(dead_code)]
 impl Contacts {
     /// Whether `contact` has a button or finger down right now.
     pub fn is_pressed(&self, contact: ContactId) -> bool {

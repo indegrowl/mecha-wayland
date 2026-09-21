@@ -16,7 +16,6 @@ use crate::contacts::HitSet;
 /// A node whose `Layout` was never written by `LayoutModule` is
 /// `Rect::default()`, which is zero-sized and so never matches; no
 /// separate filter is needed for it.
-#[allow(dead_code)]
 pub(crate) fn hit_test(app: &App, window: NodeId, position: Point) -> HitSet {
     let contains = |id: NodeId| {
         app.component::<Layout>(id)
@@ -128,6 +127,11 @@ mod tests {
             hit_test(&app, win, Point::new(60.0, 59.9)).into_vec(),
             vec![card, win],
             "the right edge is excluded"
+        );
+        assert_eq!(
+            hit_test(&app, win, Point::new(20.0, 20.0)).into_vec(),
+            vec![button, card, win],
+            "the top-left corner is included"
         );
     }
 

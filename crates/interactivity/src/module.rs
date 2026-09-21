@@ -3,8 +3,7 @@
 //! Registered as four systems on the same `ContactInput`, each filtering
 //! on its own phase, rather than one function with a match over all four:
 //! `Moved` is independent hover tracking; `Pressed`, `Released` and
-//! `Cancelled` are one capture lifecycle. Splitting them this way let
-//! each half land as its own reviewable task.
+//! `Cancelled` are one capture lifecycle.
 
 use app::{App, Module, NodeId};
 
@@ -13,6 +12,20 @@ use crate::contacts::{Contacts, HitSet};
 use crate::events::{Clicked, Enter, Exit, Press, Release};
 use crate::hit_test::hit_test;
 
+/// `presentation` is trusted to know which surface an input came from; a
+/// stale or non-`Window` id here is its bug, not this crate's. `hit_test`
+/// against a bad id just finds nothing, so release behavior stays a
+/// silent no-op — this only catches the mistake in debug builds.
+fn trusted_window(app: &App, window: NodeId) {
+    debug_assert!(
+        app.widget::<window::Window>(window).is_some(),
+        "ContactInput.window must name a live Window node; this is a producer bug"
+    );
+}
+
+/// Registers the `Contacts` resource and the four systems that turn a
+/// `ContactInput` into `Press`/`Release`/`Enter`/`Exit`/`Clicked`.
+/// Installs after `WindowModule`.
 pub struct InteractivityModule;
 
 impl Module for InteractivityModule {
@@ -35,6 +48,7 @@ fn on_moved(app: &mut App, input: &ContactInput) {
     if input.phase != ContactPhase::Moved {
         return;
     }
+    trusted_window(app, input.window);
     let hit = hit_test(app, input.window, input.position);
     let (entered, exited) = {
         let mut contacts = app.resource_mut::<Contacts>();
@@ -68,10 +82,15 @@ fn on_pressed(app: &mut App, input: &ContactInput) {
     if input.phase != ContactPhase::Pressed {
         return;
     }
+    trusted_window(app, input.window);
     let hit = hit_test(app, input.window, input.position);
     {
         let mut contacts = app.resource_mut::<Contacts>();
         let state = contacts.entry(input.contact, input.window);
+        // No diff against the previous `hit` here, unlike `on_moved`: the
+        // producer contract guarantees a `Pressed` always follows a
+        // `Moved` at the same position, so `state.hit` is already this
+        // same set and no Enter/Exit is owed.
         state.hit = hit.clone();
         state.captured = Some(hit.clone());
         state.position = input.position;

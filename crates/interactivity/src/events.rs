@@ -7,26 +7,43 @@ use geometry::Point;
 
 use crate::ContactId;
 
+/// A contact went down over this node: every node in the fresh hit-set at
+/// the `Pressed` position, deepest-first, window last. Locks in ("captures")
+/// that set for `Release`/`Clicked` to route to later.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Press {
     pub contact: ContactId,
     pub position: Point,
 }
+/// A contact that pressed this node has now gone up. Reaches the set
+/// captured at `Press`, not a fresh hit test — the contact may have moved
+/// off every one of these nodes in between.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Release {
     pub contact: ContactId,
     pub position: Point,
 }
+/// A contact's fresh hit-set now includes this node, where it did not on
+/// the previous `Moved`. Independent of any capture in progress.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Enter {
     pub contact: ContactId,
     pub position: Point,
 }
+/// A contact's fresh hit-set no longer includes this node, where it did
+/// on the previous `Moved`. Independent of any capture in progress; also
+/// fired, for the captured set, when a `Cancelled` or a `Touch`'s
+/// `Released` tears down that contact's state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Exit {
     pub contact: ContactId,
     pub position: Point,
 }
+/// A contact that pressed this node has now gone up over it, in the usual
+/// sense of "clicked". Fires alongside `Release`, on the same captured
+/// set. Unconditional in v0: there is no check that the contact is still
+/// within this set's bounds at release time, so `Clicked` fires even if
+/// the contact moved off every one of these nodes before releasing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clicked {
     pub contact: ContactId,

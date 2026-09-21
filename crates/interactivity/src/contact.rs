@@ -28,6 +28,9 @@ pub enum ContactPhase {
     Cancelled,
 }
 
+/// One report of pointer-like input, window-local: `presentation`'s
+/// reduction of `wl_pointer` and `wl_touch` to a single shape, and the
+/// only signal this crate consumes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContactInput {
     pub window: NodeId,

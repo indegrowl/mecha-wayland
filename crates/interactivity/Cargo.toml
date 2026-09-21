@@ -8,6 +8,4 @@ app.workspace = true
 geometry.workspace = true
 layout.workspace = true
 smallvec.workspace = true
-
-[dev-dependencies]
 window.workspace = true
