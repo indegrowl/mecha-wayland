@@ -142,6 +142,24 @@ fn log_contact(app: &mut App, e: &ContactInput) {
         e.window, e.contact, e.phase, e.position.x, e.position.y
     ));
 }
+fn log_press(app: &mut App, e: &Emitted<Press>) {
+    let target = e.targets.iter().next().copied();
+    app.resource_mut::<Log>()
+        .0
+        .push(format!("Press {target:?}"));
+}
+fn log_release(app: &mut App, e: &Emitted<Release>) {
+    let target = e.targets.iter().next().copied();
+    app.resource_mut::<Log>()
+        .0
+        .push(format!("Release {target:?}"));
+}
+fn log_clicked(app: &mut App, e: &Emitted<Clicked>) {
+    let target = e.targets.iter().next().copied();
+    app.resource_mut::<Log>()
+        .0
+        .push(format!("Clicked {target:?}"));
+}
 
 static GPU: Mutex<()> = Mutex::new(());
 
@@ -180,6 +198,7 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .add_module(LayoutModule)
         .add_module(PaintModule)
         .add_module(WindowModule)
+        .add_module(InteractivityModule)
         .add_module(RenderModule::default())
         .insert_resource(Atlas::new());
     f.app
@@ -189,6 +208,9 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .system(log_close)
         .system(log_frame)
         .system(log_contact)
+        .system(log_press)
+        .system(log_release)
+        .system(log_clicked)
         .add_module(PresentationModule {
             app_id: "test".into(),
             budget: Budget::default(),
@@ -1286,4 +1308,67 @@ fn a_motion_or_up_for_an_unknown_touch_id_is_a_no_op() {
     });
     f.turn();
     assert!(log(&f).is_empty(), "id 99 was never seen in a Down");
+}
+
+#[test]
+fn a_touch_down_and_up_over_a_leaf_fires_press_release_and_clicked() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = spawn(&mut f, LayoutStyle::default().column());
+
+    struct Leaf;
+    impl Build for Leaf {
+        type Widget = Leaf;
+    }
+    impl Widget for Leaf {
+        type Builder = Leaf;
+        fn build(b: Leaf, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self {
+            b
+        }
+    }
+    let leaf = f
+        .app
+        .spawn_with(
+            win,
+            Leaf,
+            (LayoutStyle::default().size(px(10.0), px(10.0)),),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+
+    f.requests();
+    let t = touch(&mut f);
+    f.send(t, ev::TOUCH_DOWN, |w| {
+        w.uint(1);
+        w.uint(2);
+        w.object(ObjectId(SURFACE));
+        w.int(0);
+        w.fixed(5.0);
+        w.fixed(5.0);
+    });
+    f.turn();
+    f.send(t, ev::TOUCH_UP, |w| {
+        w.uint(3);
+        w.uint(4);
+        w.int(0);
+    });
+    f.turn();
+
+    // `log_contact` also logs the raw `Moved`/`Pressed`/`Released`
+    // `ContactInput` lines into the same `Log`; filter down to the
+    // dispatched events this test is actually proving.
+    let clicks: Vec<_> = log(&f)
+        .into_iter()
+        .filter(|e| {
+            e.starts_with("Press ") || e.starts_with("Release ") || e.starts_with("Clicked ")
+        })
+        .collect();
+    assert_eq!(
+        clicks,
+        vec![
+            format!("Press Some({leaf:?})"),
+            format!("Release Some({leaf:?})"),
+            format!("Clicked Some({leaf:?})"),
+        ]
+    );
 }
