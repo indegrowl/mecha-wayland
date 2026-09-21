@@ -99,24 +99,23 @@ fn on_released(app: &mut App, input: &ContactInput) {
         state.position = input.position;
         state.captured.take()
     };
-    let Some(captured) = captured else {
-        return;
-    };
-    if !captured.is_empty() {
-        app.emit(
-            Release {
-                contact: input.contact,
-                position: input.position,
-            },
-            &captured[..],
-        );
-        app.emit(
-            Clicked {
-                contact: input.contact,
-                position: input.position,
-            },
-            &captured[..],
-        );
+    if let Some(captured) = captured {
+        if !captured.is_empty() {
+            app.emit(
+                Release {
+                    contact: input.contact,
+                    position: input.position,
+                },
+                &captured[..],
+            );
+            app.emit(
+                Clicked {
+                    contact: input.contact,
+                    position: input.position,
+                },
+                &captured[..],
+            );
+        }
     }
     if let ContactId::Touch(_) = input.contact {
         let hit = {

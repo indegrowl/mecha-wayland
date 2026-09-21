@@ -394,3 +394,32 @@ fn a_touchs_release_tears_down_its_state_but_the_mouse_keeps_hovering() {
         Some(p)
     );
 }
+
+#[test]
+fn a_touchs_release_without_a_prior_press_still_tears_down_its_state() {
+    let mut app = app();
+    let win = app.spawn(app.root(), a_window());
+    let (card, button) = card_and_button(&mut app, win);
+    app.tick();
+    let expected = vec![button.id(), card.id(), win.id()];
+    let p = Point::new(30.0, 30.0);
+
+    app.signal(moved(win, ContactId::Touch(1), p));
+    app.flush();
+    take_enter();
+
+    app.signal(released(win, ContactId::Touch(1), p));
+    app.flush();
+    assert_eq!(
+        take_exit(),
+        expected,
+        "the hovered set still gets torn down"
+    );
+    assert!(take_release().is_empty(), "there was never a capture");
+    assert!(take_clicked().is_empty(), "there was never a capture");
+    assert_eq!(
+        app.resource::<Contacts>().position(ContactId::Touch(1)),
+        None,
+        "the entry is gone"
+    );
+}
