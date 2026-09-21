@@ -21,27 +21,29 @@ const GLOBALS: &[(&str, u32)] = &[
     ("zwp_linux_dmabuf_v1", 3),
     ("xdg_wm_base", 7),
     ("zwlr_layer_shell_v1", 5),
+    ("wl_seat", 9),
 ];
 
 // Deterministic ids: registry 2, sync callback 3, compositor 4, dmabuf 5,
-// wm_base 6, layer shell 7 (bound by presentation's install). The first
-// window: surface 8, xdg surface 9, toplevel 10 (or layer surface 9).
-// Its slots after configure: params 11 and buffer 12, params 13 and
-// buffer 14; the first frame callback is 15. Ids are never reused: the
+// wm_base 6, seat 7, layer shell 8 (bound by presentation's install). The
+// first window: surface 9, xdg surface 10, toplevel 11 (or layer surface
+// 10). Its slots after configure: params 12 and buffer 13, params 14 and
+// buffer 15; the first frame callback is 16. Ids are never reused: the
 // fake sends no `delete_id`.
 const DMABUF: u32 = 5;
-const SURFACE: u32 = 8;
-const XDG: u32 = 9;
-const TOPLEVEL: u32 = 10;
-const PARAMS_A: u32 = 11;
-const BUF_A: u32 = 12;
-const PARAMS_B: u32 = 13;
-const BUF_B: u32 = 14;
-const CALLBACK: u32 = 15;
+const SEAT: u32 = 7;
+const SURFACE: u32 = 9;
+const XDG: u32 = 10;
+const TOPLEVEL: u32 = 11;
+const PARAMS_A: u32 = 12;
+const BUF_A: u32 = 13;
+const PARAMS_B: u32 = 14;
+const BUF_B: u32 = 15;
+const CALLBACK: u32 = 16;
 
-// A layer window allocates only surface 8 and layer surface 9 (no
-// toplevel), so its first slot's params is 10 and buffer 11.
-const LAYER_BUF_A: u32 = 11;
+// A layer window allocates only surface 9 and layer surface 10 (no
+// toplevel), so its first slot's params is 11 and buffer 12.
+const LAYER_BUF_A: u32 = 12;
 
 /// `DRM_FORMAT_XRGB8888`.
 const XRGB: u32 = 0x3432_5258;
@@ -144,6 +146,7 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         m.bind::<WlCompositor>()
             .bind::<ZwpLinuxDmabufV1>()
             .bind::<XdgWmBase>()
+            .bind::<WlSeat>()
     });
     f.send(DMABUF, ev::DMABUF_MODIFIER, |w| {
         w.uint(XRGB);
@@ -337,7 +340,7 @@ fn a_layer_window_gets_a_layer_surface_with_its_role() {
         shape,
         vec![
             (4, op::CREATE_SURFACE),
-            (7, op::GET_LAYER_SURFACE),
+            (8, op::GET_LAYER_SURFACE),
             (XDG, op::LAYER_SET_ANCHOR),
             (XDG, op::LAYER_SET_ZONE),
             (XDG, op::LAYER_SET_KEYBOARD),
