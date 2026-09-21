@@ -11,13 +11,16 @@ mod contact;
 mod contacts;
 mod events;
 mod hit_test;
+mod module;
 
 pub use contact::{ContactId, ContactInput, ContactPhase};
 pub use contacts::Contacts;
 pub use events::{Clicked, Enter, Exit, Press, Release};
+pub use module::InteractivityModule;
 
 pub mod prelude {
     pub use crate::{
-        Clicked, ContactId, ContactInput, ContactPhase, Contacts, Enter, Exit, Press, Release,
+        Clicked, ContactId, ContactInput, ContactPhase, Contacts, Enter, Exit, InteractivityModule,
+        Press, Release,
     };
 }
