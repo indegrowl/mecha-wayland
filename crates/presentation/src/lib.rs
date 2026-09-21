@@ -88,7 +88,7 @@ use window::prelude::*;
 mod seat;
 mod slots;
 
-use seat::{Seat, on_seat};
+use seat::{Seat, on_pointer, on_seat};
 use slots::Slots;
 
 pub use wayland::{
@@ -181,6 +181,12 @@ impl Surfaces {
         self.entries.get(&window).is_some_and(|e| e.configured)
     }
 
+    /// The window that owns `surface`, if any. `seat.rs`'s pointer/touch
+    /// reducer needs no other part of an entry.
+    pub(crate) fn window_of(&self, surface: ObjectId) -> Option<NodeId> {
+        self.owner.get(&surface).copied()
+    }
+
     fn entry_of(&mut self, object: ObjectId) -> Option<(NodeId, &mut Entry)> {
         let w = *self.owner.get(&object)?;
         self.entries.get_mut(&w).map(|e| (w, e))
@@ -261,6 +267,7 @@ impl Module for PresentationModule {
             .system(on_wm_base)
             .system(on_dmabuf)
             .system(on_seat)
+            .system(on_pointer)
             .system(on_xdg_surface)
             .system(on_toplevel)
             .system(on_layer_surface)

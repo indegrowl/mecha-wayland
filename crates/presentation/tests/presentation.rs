@@ -8,6 +8,7 @@ use app::prelude::*;
 use atlas::Atlas;
 use geometry::Color;
 use gles::{Budget, Device, Error};
+use interactivity::prelude::*;
 use layout::prelude::*;
 use paint::prelude::*;
 use presentation::prelude::*;
@@ -102,6 +103,10 @@ mod ev {
     pub const PREFERRED_SCALE: u16 = 2;
     pub const DMABUF_MODIFIER: u16 = 1;
     pub const CAPABILITIES: u16 = 0;
+    pub const POINTER_ENTER: u16 = 0;
+    pub const POINTER_LEAVE: u16 = 1;
+    pub const POINTER_MOTION: u16 = 2;
+    pub const POINTER_BUTTON: u16 = 3;
 }
 
 #[derive(Default)]
@@ -126,6 +131,12 @@ fn log_close(app: &mut App, e: &Emitted<CloseRequested>) {
 }
 fn log_frame(app: &mut App, f: &Frame) {
     app.resource_mut::<Log>().0.push(format!("Frame {:?}", f.0));
+}
+fn log_contact(app: &mut App, e: &ContactInput) {
+    app.resource_mut::<Log>().0.push(format!(
+        "{:?} {:?} {:?} {}x{}",
+        e.window, e.contact, e.phase, e.position.x, e.position.y
+    ));
 }
 
 static GPU: Mutex<()> = Mutex::new(());
@@ -173,6 +184,7 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .system(log_scale)
         .system(log_close)
         .system(log_frame)
+        .system(log_contact)
         .add_module(PresentationModule {
             app_id: "test".into(),
             budget: Budget::default(),
@@ -254,6 +266,17 @@ fn shape(f: &mut Fake) -> Vec<(u32, u16)> {
         .iter()
         .map(|r| (r.sender.0, r.opcode))
         .collect()
+}
+
+/// Requests a `wl_pointer` and returns its id, read off the wire rather
+/// than assumed, since which id it gets depends on what the test already
+/// spawned.
+fn pointer(f: &mut Fake) -> u32 {
+    f.send(SEAT, ev::CAPABILITIES, |w| {
+        w.uint(WlSeatCapability::POINTER.bits())
+    });
+    f.turn();
+    f.expect(SEAT, op::GET_POINTER).reader().object().unwrap().0
 }
 
 /// Changes the window's clear colour through a child quad, so render
@@ -1058,4 +1081,80 @@ fn seat_capabilities_requests_pointer_and_touch_objects_once_each() {
     });
     f.turn();
     assert_eq!(shape(&mut f), vec![(SEAT, op::GET_TOUCH)]);
+}
+
+#[test]
+fn pointer_enter_motion_button_leave_produce_contact_input_at_the_focused_window() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    let ptr = pointer(&mut f);
+
+    f.send(ptr, ev::POINTER_ENTER, |w| {
+        w.uint(1);
+        w.object(ObjectId(SURFACE));
+        w.fixed(10.0);
+        w.fixed(20.0);
+    });
+    f.turn();
+    f.send(ptr, ev::POINTER_MOTION, |w| {
+        w.uint(2);
+        w.fixed(11.0);
+        w.fixed(21.0);
+    });
+    f.turn();
+    f.send(ptr, ev::POINTER_BUTTON, |w| {
+        w.uint(3);
+        w.uint(4);
+        w.uint(0x110);
+        w.uint(WlPointerButtonState::Pressed.into());
+    });
+    f.turn();
+    f.send(ptr, ev::POINTER_BUTTON, |w| {
+        w.uint(5);
+        w.uint(6);
+        w.uint(0x110);
+        w.uint(WlPointerButtonState::Released.into());
+    });
+    f.turn();
+    f.send(ptr, ev::POINTER_LEAVE, |w| {
+        w.uint(7);
+        w.object(ObjectId(SURFACE));
+    });
+    f.turn();
+
+    assert_eq!(
+        log(&f),
+        vec![
+            format!("{win:?} Mouse Moved 10x20"),
+            format!("{win:?} Mouse Moved 11x21"),
+            format!("{win:?} Mouse Pressed 11x21"),
+            format!("{win:?} Mouse Released 11x21"),
+            format!("{win:?} Mouse Cancelled 11x21"),
+        ]
+    );
+}
+
+#[test]
+fn a_button_or_leave_with_no_prior_enter_is_a_no_op() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    spawn(&mut f, LayoutStyle::default().column());
+    f.requests();
+    let ptr = pointer(&mut f);
+
+    f.send(ptr, ev::POINTER_BUTTON, |w| {
+        w.uint(1);
+        w.uint(2);
+        w.uint(0x110);
+        w.uint(WlPointerButtonState::Pressed.into());
+    });
+    f.send(ptr, ev::POINTER_LEAVE, |w| {
+        w.uint(3);
+        w.object(ObjectId(SURFACE));
+    });
+    f.turn();
+    assert!(
+        log(&f).is_empty(),
+        "no pointer_focus on record, so both are no-ops"
+    );
 }

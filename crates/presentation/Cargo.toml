@@ -8,6 +8,7 @@ app.workspace = true
 atlas.workspace = true
 geometry.workspace = true
 gles.workspace = true
+interactivity.workspace = true
 layout.workspace = true
 render.workspace = true
 wayland.workspace = true
