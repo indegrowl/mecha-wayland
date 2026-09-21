@@ -6,6 +6,7 @@ use app::prelude::*;
 use atlas::prelude::*;
 use geometry::{Color, Point, Size};
 use gles::Budget;
+use interactivity::prelude::*;
 use layout::prelude::*;
 use paint::prelude::*;
 use presentation::prelude::*;
@@ -54,6 +55,12 @@ impl Widget for Shell {
                 Paint::Quad(Quad::new(Color::rgb(0.2, 0.45, 0.8)).radius(12.0)),
             ),
         );
+        s.on::<Press>(panel, |_, e| {
+            eprintln!("panel: Press {:?} at {:?}", e.contact, e.position)
+        });
+        s.on::<Release>(panel, |_, e| {
+            eprintln!("panel: Release {:?} at {:?}", e.contact, e.position)
+        });
         // A translucent card inside it, blended.
         s.spawn_with(
             panel,
@@ -122,6 +129,7 @@ fn main() {
     app.add_module(LayoutModule)
         .add_module(PaintModule)
         .add_module(WindowModule)
+        .add_module(InteractivityModule)
         .add_module(RenderModule::default())
         .insert_resource(Atlas::new());
     app.add_module(RingModule::default())
@@ -129,7 +137,8 @@ fn main() {
             WaylandModule::new()
                 .bind::<WlCompositor>()
                 .bind::<ZwpLinuxDmabufV1>()
-                .bind::<XdgWmBase>(),
+                .bind::<XdgWmBase>()
+                .bind::<WlSeat>(),
         )
         .add_module(PresentationModule {
             app_id: "mecha.showcase".into(),
