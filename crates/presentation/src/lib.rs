@@ -34,8 +34,8 @@
 //!   surface.
 //!
 //! Installs last of everything, after `RenderModule` and `WaylandModule`,
-//! which must have bound `WlCompositor`, `ZwpLinuxDmabufV1` and
-//! `XdgWmBase`. Opens the GPU at install; no GPU is a panic.
+//! which must have bound `WlCompositor`, `ZwpLinuxDmabufV1`, `XdgWmBase`
+//! and `WlSeat`. Opens the GPU at install; no GPU is a panic.
 //!
 //! # Quick start
 //!
@@ -51,9 +51,17 @@
 //! use wayland::prelude::*;
 //! use window::prelude::*;
 //!
-//! let globals = [("wl_compositor", 6), ("zwp_linux_dmabuf_v1", 3), ("xdg_wm_base", 7)];
+//! let globals = [
+//!     ("wl_compositor", 6),
+//!     ("zwp_linux_dmabuf_v1", 3),
+//!     ("xdg_wm_base", 7),
+//!     ("wl_seat", 9),
+//! ];
 //! let mut f = Fake::new(&globals, |m| {
-//!     m.bind::<WlCompositor>().bind::<ZwpLinuxDmabufV1>().bind::<XdgWmBase>()
+//!     m.bind::<WlCompositor>()
+//!         .bind::<ZwpLinuxDmabufV1>()
+//!         .bind::<XdgWmBase>()
+//!         .bind::<WlSeat>()
 //! });
 //! f.app
 //!     .add_module(LayoutModule)
@@ -66,9 +74,9 @@
 //! let win = f.app.spawn(root, window().title("hi")).id();
 //! f.app.tick();
 //! f.turn();
-//! // The compositor configures the toplevel (id 9) and its xdg surface (id 8).
-//! f.send(9, 0, |w| { w.int(320); w.int(200); w.array(&[]); });
-//! f.send(8, 0, |w| w.uint(1));
+//! // The compositor configures the toplevel (id 10) and its xdg surface (id 9).
+//! f.send(10, 0, |w| { w.int(320); w.int(200); w.array(&[]); });
+//! f.send(9, 0, |w| w.uint(1));
 //! f.turn();
 //! assert!(f.app.resource::<Surfaces>().is_configured(win));
 //! assert_eq!(f.app.component::<LayoutStyle>(win).unwrap().width, px(320.0));
@@ -212,8 +220,8 @@ impl Surfaces {
 ///
 /// # Panics
 ///
-/// If `WlCompositor`, `ZwpLinuxDmabufV1` or `XdgWmBase` were not bound by
-/// `WaylandModule`, if `wl_compositor` is below version 4 or
+/// If `WlCompositor`, `ZwpLinuxDmabufV1`, `XdgWmBase` or `WlSeat` were not
+/// bound by `WaylandModule`, if `wl_compositor` is below version 4 or
 /// `zwp_linux_dmabuf_v1` below 3, or if the GPU does not open with a
 /// GLES 3.0 context.
 pub struct PresentationModule {
@@ -227,6 +235,7 @@ impl Module for PresentationModule {
         let compositor = *app.resource::<WlCompositor>();
         let dmabuf = *app.resource::<ZwpLinuxDmabufV1>();
         let _ = app.resource::<XdgWmBase>();
+        let seat = *app.resource::<WlSeat>();
         {
             let wl = app.resource::<Wayland>();
             assert!(
@@ -261,7 +270,6 @@ impl Module for PresentationModule {
             dmabuf,
             modifiers: Vec::new(),
         });
-        let seat = *app.resource::<WlSeat>();
         app.insert_resource(Seat::new(seat));
         app.system(on_spawned)
             .system(on_wm_base)

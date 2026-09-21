@@ -2,8 +2,10 @@
 //! `Seat` is presentation's own state for this: the bound `wl_seat`, the
 //! `wl_pointer`/`wl_touch` objects once requested, and (from later in
 //! this file) the small bit of focus/position bookkeeping a reducer
-//! needs that `interactivity::Contacts` cannot supply in time — see the
-//! design doc's "Why presentation tracks position itself".
+//! needs that `interactivity::Contacts` cannot supply in time.
+//! `App::signal` queues onto a list `App::flush` drains later, so a
+//! `ContactInput` just sent has not reached `Contacts` yet when the next
+//! protocol event for the same contact arrives.
 
 use std::collections::HashMap;
 
@@ -71,6 +73,7 @@ pub(crate) fn on_pointer(app: &mut App, e: &WlPointerEvent) {
             ..
         } => {
             let Some(window) = app.resource::<Surfaces>().window_of(surface.id()) else {
+                app.resource_mut::<Seat>().pointer_focus = None;
                 return;
             };
             let position = Point::new(*surface_x, *surface_y);
