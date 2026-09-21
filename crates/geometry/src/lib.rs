@@ -107,6 +107,13 @@ impl Rect {
             (self.size.height - insets.vertical()).max(0.0),
         )
     }
+
+    /// Whether `p` is inside the rect. Half-open: the right and bottom
+    /// edges are excluded, so two adjacent rects never both claim a point
+    /// on their shared edge.
+    pub fn contains(self, p: Point) -> bool {
+        p.x >= self.x() && p.x < self.right() && p.y >= self.y() && p.y < self.bottom()
+    }
 }
 
 /// One value per side of a box: padding, margin, border, inset.
@@ -322,6 +329,33 @@ mod tests {
         let r = Rect::new(0.0, 0.0, 10.0, 10.0);
         let inner = r.inset(Insets::all(8.0));
         assert_eq!(inner, Rect::new(8.0, 8.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn rect_contains_is_half_open() {
+        let r = Rect::new(10.0, 20.0, 30.0, 40.0);
+        assert!(
+            r.contains(Point::new(10.0, 20.0)),
+            "the top-left corner is in"
+        );
+        assert!(
+            r.contains(Point::new(39.9, 59.9)),
+            "just inside the far corner"
+        );
+        assert!(
+            !r.contains(Point::new(40.0, 30.0)),
+            "the right edge is excluded"
+        );
+        assert!(
+            !r.contains(Point::new(20.0, 60.0)),
+            "the bottom edge is excluded"
+        );
+        assert!(!r.contains(Point::new(9.9, 30.0)), "left of the rect");
+        assert!(!r.contains(Point::new(20.0, 19.9)), "above the rect");
+        assert!(
+            !Rect::ZERO.contains(Point::ZERO),
+            "a zero rect contains nothing"
+        );
     }
 
     #[test]
