@@ -211,6 +211,17 @@ impl Color {
         )
     }
 
+    /// From a packed 32-bit integer `0xRRGGBBAA`; alpha is taken from
+    /// the low byte, so `0x______ff` is fully opaque.
+    pub const fn from_u32(val: u32) -> Self {
+        Self::from_rgba8(
+            ((val >> 24) & 0xff) as u8,
+            ((val >> 16) & 0xff) as u8,
+            ((val >> 8) & 0xff) as u8,
+            (val & 0xff) as u8,
+        )
+    }
+
     /// Parse a hex colour string (`#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`,
     /// with or without a leading `#`).
     ///
@@ -484,6 +495,22 @@ mod tests {
             (size_of::<Corners<f32>>(), align_of::<Corners<f32>>()),
             (16, 4)
         );
+    }
+
+    #[test]
+    fn color_from_u32() {
+        assert_eq!(Color::from_u32(0xff0000ff), Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(Color::from_u32(0x00ff00ff), Color::rgb(0.0, 1.0, 0.0));
+        assert_eq!(Color::from_u32(0x0000ffff), Color::rgb(0.0, 0.0, 1.0));
+        assert_eq!(Color::from_u32(0x00000000), Color::TRANSPARENT);
+        assert_eq!(
+            Color::from_u32(0x12345678),
+            Color::from_rgba8(0x12, 0x34, 0x56, 0x78)
+        );
+
+        // Const evaluation
+        const C: Color = Color::from_u32(0x11223344);
+        assert_eq!(C, Color::from_rgba8(0x11, 0x22, 0x33, 0x44));
     }
 
     #[test]
