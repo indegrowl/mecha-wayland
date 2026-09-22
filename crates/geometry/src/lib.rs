@@ -211,6 +211,58 @@ impl Color {
         )
     }
 
+    /// From a packed 32-bit integer `0xRRGGBBAA`; alpha is taken from
+    /// the low byte, so `0x______ff` is fully opaque.
+    pub const fn from_u32(val: u32) -> Self {
+        Self::from_rgba8(
+            ((val >> 24) & 0xff) as u8,
+            ((val >> 16) & 0xff) as u8,
+            ((val >> 8) & 0xff) as u8,
+            (val & 0xff) as u8,
+        )
+    }
+
+    /// Parse a hex colour string (`#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`,
+    /// with or without a leading `#`).
+    ///
+    /// # Panics
+    /// Panics if `hex` has an invalid length (expected 3, 4, 6, or 8 hex digits,
+    /// optionally prefixed with `#`) or contains invalid non-hex characters.
+    pub const fn from_hex(hex: &str) -> Self {
+        const fn nibble(b: u8) -> u8 {
+            match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' => b - b'a' + 10,
+                b'A'..=b'F' => b - b'A' + 10,
+                _ => panic!("invalid hex digit: expected [0-9a-fA-F]"),
+            }
+        }
+
+        const fn pair(hi: u8, lo: u8) -> u8 {
+            (nibble(hi) << 4) | nibble(lo)
+        }
+
+        let s = match hex.as_bytes() {
+            [b'#', rest @ ..] => rest,
+            rest => rest,
+        };
+
+        match *s {
+            [r, g, b] => Self::from_rgb8(nibble(r) * 17, nibble(g) * 17, nibble(b) * 17),
+            [r, g, b, a] => Self::from_rgba8(
+                nibble(r) * 17,
+                nibble(g) * 17,
+                nibble(b) * 17,
+                nibble(a) * 17,
+            ),
+            [r0, r1, g0, g1, b0, b1] => Self::from_rgb8(pair(r0, r1), pair(g0, g1), pair(b0, b1)),
+            [r0, r1, g0, g1, b0, b1, a0, a1] => {
+                Self::from_rgba8(pair(r0, r1), pair(g0, g1), pair(b0, b1), pair(a0, a1))
+            }
+            _ => panic!("invalid hex color length: expected 3, 4, 6, or 8 hex digits"),
+        }
+    }
+
     /// The same colour with `a` for its alpha.
     pub fn with_alpha(self, a: f32) -> Self {
         Self { a, ..self }
@@ -443,5 +495,123 @@ mod tests {
             (size_of::<Corners<f32>>(), align_of::<Corners<f32>>()),
             (16, 4)
         );
+    }
+
+    #[test]
+    fn color_from_u32() {
+        assert_eq!(Color::from_u32(0xff0000ff), Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(Color::from_u32(0x00ff00ff), Color::rgb(0.0, 1.0, 0.0));
+        assert_eq!(Color::from_u32(0x0000ffff), Color::rgb(0.0, 0.0, 1.0));
+        assert_eq!(Color::from_u32(0x00000000), Color::TRANSPARENT);
+        assert_eq!(
+            Color::from_u32(0x12345678),
+            Color::from_rgba8(0x12, 0x34, 0x56, 0x78)
+        );
+
+        // Const evaluation
+        const C: Color = Color::from_u32(0x11223344);
+        assert_eq!(C, Color::from_rgba8(0x11, 0x22, 0x33, 0x44));
+    }
+
+    #[test]
+    fn color_from_hex_valid() {
+        // 3-digit (#RGB)
+        assert_eq!(Color::from_hex("#f00"), Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(Color::from_hex("0f0"), Color::rgb(0.0, 1.0, 0.0));
+        assert_eq!(Color::from_hex("#00f"), Color::rgb(0.0, 0.0, 1.0));
+
+        // 4-digit (#RGBA)
+        assert_eq!(
+            Color::from_hex("#abcd"),
+            Color::from_rgba8(0xaa, 0xbb, 0xcc, 0xdd)
+        );
+        assert_eq!(
+            Color::from_hex("1234"),
+            Color::from_rgba8(0x11, 0x22, 0x33, 0x44)
+        );
+
+        // 6-digit (#RRGGBB)
+        assert_eq!(Color::from_hex("#ff0000"), Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(Color::from_hex("00ff00"), Color::rgb(0.0, 1.0, 0.0));
+        assert_eq!(Color::from_hex("#0000ff"), Color::rgb(0.0, 0.0, 1.0));
+
+        // 8-digit (#RRGGBBAA)
+        assert_eq!(
+            Color::from_hex("#12345678"),
+            Color::from_rgba8(0x12, 0x34, 0x56, 0x78)
+        );
+        assert_eq!(
+            Color::from_hex("abcdef01"),
+            Color::from_rgba8(0xab, 0xcd, 0xef, 0x01)
+        );
+
+        // Case insensitivity
+        assert_eq!(Color::from_hex("#AbCd"), Color::from_hex("#abcd"));
+        assert_eq!(Color::from_hex("#FF00AA"), Color::from_hex("#ff00aa"));
+        assert_eq!(Color::from_hex("#AABBCCDD"), Color::from_hex("#aabbccdd"));
+
+        // Const evaluation
+        const C: Color = Color::from_hex("#123456");
+        assert_eq!(C, Color::from_rgb8(0x12, 0x34, 0x56));
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_empty() {
+        Color::from_hex("");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_hash_only() {
+        Color::from_hex("#");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_invalid_len_1() {
+        Color::from_hex("#f");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_invalid_len_2() {
+        Color::from_hex("#ff");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_invalid_len_5() {
+        Color::from_hex("#12345");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_invalid_len_7() {
+        Color::from_hex("#1234567");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex color length")]
+    fn color_from_hex_invalid_len_9() {
+        Color::from_hex("#123456789");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex digit")]
+    fn color_from_hex_invalid_char() {
+        Color::from_hex("#xyz");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex digit")]
+    fn color_from_hex_invalid_last_digit() {
+        Color::from_hex("#12345g");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid hex digit")]
+    fn color_from_hex_double_hash() {
+        Color::from_hex("##fff");
     }
 }
