@@ -13,6 +13,7 @@ pub mod prelude {
     pub use presentation::prelude::*;
     pub use render::prelude::*;
     pub use ring::prelude::*;
+    pub use theme::prelude::*;
     pub use wayland::prelude::*;
     pub use widgets::prelude::*;
     pub use window::prelude::*;
