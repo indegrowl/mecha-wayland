@@ -1,9 +1,6 @@
 //! A `+`/`-` pair that bump a label each click. Run under a Wayland
 //! session: `cargo run --example counter`.
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use mecha_wayland::prelude::*;
 
 /// A clickable box with a text label. It does nothing on its own —
@@ -39,7 +36,16 @@ impl Widget for Button {
 }
 
 /// A label between a `-` and a `+`; each click moves the count by one.
-struct Counter;
+struct Counter {
+    count: i32,
+}
+
+impl Counter {
+    fn step(&mut self, delta: i32) -> i32 {
+        self.count += delta;
+        self.count
+    }
+}
 
 fn counter(font: FontId) -> CounterBuilder {
     CounterBuilder { font }
@@ -67,21 +73,17 @@ impl Widget for Counter {
         let minus = s.spawn(row, button(b.font, "-"));
         let plus = s.spawn(row, button(b.font, "+"));
 
-        let count = Rc::new(Cell::new(0i32));
-
-        let dec = count.clone();
         s.on::<Clicked>(minus, move |ctx, _| {
-            dec.set(dec.get() - 1);
-            ctx.at(label).unwrap().set_text(dec.get().to_string());
+            let count = ctx.me().step(-1);
+            ctx.at(label).unwrap().set_text(count.to_string());
         });
 
-        let inc = count.clone();
         s.on::<Clicked>(plus, move |ctx, _| {
-            inc.set(inc.get() + 1);
-            ctx.at(label).unwrap().set_text(inc.get().to_string());
+            let count = ctx.me().step(1);
+            ctx.at(label).unwrap().set_text(count.to_string());
         });
 
-        Counter
+        Counter { count: 0 }
     }
 }
 
