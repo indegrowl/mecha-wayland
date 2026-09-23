@@ -376,6 +376,7 @@ dependencies = [
  "presentation",
  "render",
  "ring",
+ "theme",
  "wayland",
  "widgets",
  "window",
@@ -702,6 +703,14 @@ dependencies = [
  "grid",
  "serde",
  "slotmap",
+]
+
+[[package]]
+name = "theme"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "geometry",
 ]
 
 [[package]]

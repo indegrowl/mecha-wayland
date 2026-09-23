@@ -19,9 +19,25 @@ ring.workspace = true
 wayland.workspace = true
 widgets.workspace = true
 window.workspace = true
+theme.workspace = true
 
 [workspace]
-members = ["crates/app", "crates/atlas", "crates/geometry", "crates/gles", "crates/interactivity", "crates/layout", "crates/paint", "crates/presentation", "crates/render", "crates/ring", "crates/wayland", "crates/widgets", "crates/window"]
+members = [
+    "crates/app",
+    "crates/atlas",
+    "crates/geometry",
+    "crates/gles",
+    "crates/interactivity",
+    "crates/layout",
+    "crates/paint",
+    "crates/presentation",
+    "crates/render",
+    "crates/ring",
+    "crates/wayland",
+    "crates/widgets",
+    "crates/window",
+    "crates/theme",
+]
 resolver = "3"
 
 [workspace.dependencies]
@@ -38,6 +54,7 @@ ring = { path = "crates/ring" }
 wayland = { path = "crates/wayland" }
 widgets = { path = "crates/widgets" }
 window = { path = "crates/window" }
+theme = { path = "crates/theme" }
 bitflags = "2"
 fontdue = "0.9"
 gbm = { version = "0.18", default-features = false }
@@ -48,7 +65,11 @@ libc = "0.2"
 png = "0.18"
 resvg = { version = "0.44", default-features = false }
 smallvec = "1"
-taffy = { version = "0.10.1", default-features = false, features = ["std", "flexbox", "block_layout"] }
+taffy = { version = "0.10.1", default-features = false, features = [
+    "std",
+    "flexbox",
+    "block_layout",
+] }
 
 [profile.dev]
 debug = 1
