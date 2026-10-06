@@ -21,6 +21,7 @@ widgets.workspace = true
 window.workspace = true
 theme.workspace = true
 text-input.workspace = true
+mechanix-widgets.workspace = true
 
 [workspace]
 members = [
@@ -37,7 +38,9 @@ members = [
     "crates/wayland",
     "crates/widgets",
     "crates/window",
-    "crates/theme", "crates/text-input",
+    "crates/theme",
+    "crates/text-input",
+    "crates/mechanix-widgets",
 ]
 resolver = "3"
 
@@ -57,6 +60,7 @@ widgets = { path = "crates/widgets" }
 window = { path = "crates/window" }
 theme = { path = "crates/theme" }
 text-input = { path = "crates/text-input" }
+mechanix-widgets = { path = "crates/mechanix-widgets" }
 bitflags = "2"
 fontdue = "0.9"
 gbm = { version = "0.18", default-features = false }

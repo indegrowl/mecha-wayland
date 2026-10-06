@@ -2,6 +2,8 @@
 //! Each member crate's prelude is folded into [`prelude`] as it is rewritten
 //! against the new `app` core.
 
+pub use mechanix_widgets;
+
 pub mod prelude {
     pub use app::prelude::*;
     pub use atlas::prelude::*;

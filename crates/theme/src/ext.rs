@@ -30,6 +30,22 @@ pub trait ThemeReader {
     fn typography(&self, variant: TextVariant) -> TypographyStyle {
         self.theme().typography(variant)
     }
+
+    /// Resolve a color from an optional role, falling back to `fallback`.
+    /// Safe to call even when no theme is installed — the theme resource is
+    /// only accessed if `role` is `Some`.
+    #[inline]
+    fn resolve_color(&self, role: Option<ColorRole>, fallback: Color) -> Color {
+        role.map(|r| self.theme().color(r)).unwrap_or(fallback)
+    }
+
+    /// Resolve an optional typography variant, falling back to `None`.
+    /// Safe to call even when no theme is installed — the theme resource is
+    /// only accessed if `variant` is `Some`.
+    #[inline]
+    fn resolve_typography(&self, variant: Option<TextVariant>) -> Option<TypographyStyle> {
+        variant.map(|v| self.theme().typography(v))
+    }
 }
 
 pub trait ContextThemeExt: ThemeReader {

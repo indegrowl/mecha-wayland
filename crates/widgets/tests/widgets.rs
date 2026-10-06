@@ -669,3 +669,140 @@ fn style_context_reaches_a_div_through_its_context() {
     assert_eq!(rect(&app, panel.id()).width(), 50.0);
     assert_eq!(take_moved(), vec![vec![panel.id()]]);
 }
+
+// ── Button ──────────────────────────────────────────────────────────────
+
+#[test]
+fn button_paints_quad_and_updates_on_pointer_events() {
+    use geometry::Point;
+    use interactivity::prelude::{Enter, Exit, Press, Release};
+
+    let mut app = app();
+    let root = root(&mut app, 100.0, 40.0);
+    let btn: Handle<Button> = app.spawn(
+        root,
+        button()
+            .background(Color::BLACK)
+            .hover_background(Color::rgba(0.2, 0.2, 0.2, 1.0))
+            .pressed_background(Color::rgba(0.4, 0.4, 0.4, 1.0))
+            .radius(Corners::all(8.0)),
+    );
+    app.tick();
+
+    assert_eq!(
+        app.widget::<Button>(btn).unwrap().state,
+        WidgetState::Enabled
+    );
+    match app.component::<Paint>(btn).unwrap() {
+        Paint::Quad(q) => {
+            assert_eq!(q.color, Color::BLACK);
+            assert_eq!(q.radii, Corners::all(8.0));
+        }
+        other => panic!("expected Quad, got {other:?}"),
+    }
+
+    use interactivity::ContactId;
+
+    // Pointer Enter -> Hovered
+    app.emit(
+        Enter {
+            contact: ContactId::Mouse,
+            position: Point::ZERO,
+        },
+        btn.id(),
+    );
+    app.flush();
+    assert_eq!(
+        app.widget::<Button>(btn).unwrap().state,
+        WidgetState::Hovered
+    );
+    match app.component::<Paint>(btn).unwrap() {
+        Paint::Quad(q) => assert_eq!(q.color, Color::rgba(0.2, 0.2, 0.2, 1.0)),
+        other => panic!("expected Quad, got {other:?}"),
+    }
+
+    // Pointer Press -> Pressed
+    app.emit(
+        Press {
+            contact: ContactId::Mouse,
+            position: Point::ZERO,
+        },
+        btn.id(),
+    );
+    app.flush();
+    assert_eq!(
+        app.widget::<Button>(btn).unwrap().state,
+        WidgetState::Pressed
+    );
+    match app.component::<Paint>(btn).unwrap() {
+        Paint::Quad(q) => assert_eq!(q.color, Color::rgba(0.4, 0.4, 0.4, 1.0)),
+        other => panic!("expected Quad, got {other:?}"),
+    }
+
+    // Pointer Release -> Hovered
+    app.emit(
+        Release {
+            contact: ContactId::Mouse,
+            position: Point::ZERO,
+        },
+        btn.id(),
+    );
+    app.flush();
+    assert_eq!(
+        app.widget::<Button>(btn).unwrap().state,
+        WidgetState::Hovered
+    );
+    match app.component::<Paint>(btn).unwrap() {
+        Paint::Quad(q) => assert_eq!(q.color, Color::rgba(0.2, 0.2, 0.2, 1.0)),
+        other => panic!("expected Quad, got {other:?}"),
+    }
+
+    // Pointer Exit -> Enabled
+    app.emit(
+        Exit {
+            contact: ContactId::Mouse,
+            position: Point::ZERO,
+        },
+        btn.id(),
+    );
+    app.flush();
+    assert_eq!(
+        app.widget::<Button>(btn).unwrap().state,
+        WidgetState::Enabled
+    );
+    match app.component::<Paint>(btn).unwrap() {
+        Paint::Quad(q) => assert_eq!(q.color, Color::BLACK),
+        other => panic!("expected Quad, got {other:?}"),
+    }
+}
+
+#[test]
+fn button_context_setters_mutate_props_and_paint() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 40.0);
+    let btn: Handle<Button> = app.spawn(root, button().background(Color::BLACK));
+    app.tick();
+
+    let controller = app.spawn(
+        app.root(),
+        ControllerBuilder(Box::new(move |ctx: &mut Context<'_, Controller>| {
+            let mut c = ctx.at(btn).unwrap();
+            c.set_background(Color::WHITE);
+            c.set_radius(Corners::all(12.0));
+            c.set_disabled(true);
+        })),
+    );
+    poke(&mut app, controller.id());
+    app.tick();
+
+    let b = app.widget::<Button>(btn).unwrap();
+    assert_eq!(b.state, WidgetState::Disabled);
+    assert!(b.is_disabled());
+    match app.component::<Paint>(btn).unwrap() {
+        Paint::Quad(q) => {
+            assert_eq!(q.color, Color::WHITE);
+            assert_eq!(q.radii, Corners::all(12.0));
+        }
+        other => panic!("expected Quad, got {other:?}"),
+    }
+}
