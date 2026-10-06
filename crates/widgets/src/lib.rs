@@ -49,8 +49,8 @@
 //! let glyph = app.spawn(root, icon(sprite));
 //!
 //! app.tick();
-//! assert!(app.component::<Layout>(label).unwrap().rect.width() > 0.0);
-//! assert!(app.component::<Layout>(glyph).unwrap().rect.width() > 0.0);
+//! assert!(app.component::<ComputedLayout>(label).unwrap().rect.width() > 0.0);
+//! assert!(app.component::<ComputedLayout>(glyph).unwrap().rect.width() > 0.0);
 //! ```
 
 mod div;

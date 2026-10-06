@@ -3,6 +3,7 @@
 //! against the new `app` core.
 
 pub mod prelude {
+    pub use animation::prelude::*;
     pub use app::prelude::*;
     pub use atlas::prelude::*;
     pub use geometry::prelude::*;

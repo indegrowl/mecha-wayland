@@ -1,12 +1,11 @@
 [package]
-name = "render"
+name = "animation"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-animation.workspace = true
 app.workspace = true
-geometry.workspace = true
-layout.workspace = true
 paint.workspace = true
+layout.workspace = true
+geometry.workspace = true
 window.workspace = true
