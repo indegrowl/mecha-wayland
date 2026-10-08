@@ -101,11 +101,14 @@ pub trait ImageContext {
 
 impl ImageContext for Context<'_, Image> {
     fn set_sprite(&mut self, sprite: SpriteId) {
+        let sprite = self.resource::<Atlas>().sprite(sprite);
+        if self.me().tile == sprite.tile {
+            return;
+        }
         let (radii, opacity, grayscale) = {
             let w = self.me();
             (w.radii, w.opacity, w.grayscale)
         };
-        let sprite = self.resource::<Atlas>().sprite(sprite);
         self.set_paint(Paint::Polychrome(
             PolychromeSprite::new(sprite.tile)
                 .radii(radii)
@@ -117,6 +120,9 @@ impl ImageContext for Context<'_, Image> {
     }
 
     fn set_opacity(&mut self, opacity: f32) {
+        if self.me().opacity == opacity {
+            return;
+        }
         let (tile, radii, grayscale) = {
             let w = self.me();
             (w.tile, w.radii, w.grayscale)
@@ -131,6 +137,9 @@ impl ImageContext for Context<'_, Image> {
     }
 
     fn set_grayscale(&mut self, grayscale: bool) {
+        if self.me().grayscale == grayscale {
+            return;
+        }
         let (tile, radii, opacity) = {
             let w = self.me();
             (w.tile, w.radii, w.opacity)
@@ -149,6 +158,9 @@ impl ImageContext for Context<'_, Image> {
     }
 
     fn set_radii(&mut self, radii: Corners<f32>) {
+        if self.me().radii == radii {
+            return;
+        }
         let (tile, opacity, grayscale) = {
             let w = self.me();
             (w.tile, w.opacity, w.grayscale)
