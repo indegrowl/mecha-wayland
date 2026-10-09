@@ -85,6 +85,9 @@ pub trait IconContext {
 
 impl IconContext for Context<'_, Icon> {
     fn set_color(&mut self, color: Color) {
+        if self.me().color == color {
+            return;
+        }
         let (tile, size) = {
             let w = self.me();
             (w.tile, w.size)
@@ -99,6 +102,9 @@ impl IconContext for Context<'_, Icon> {
     }
 
     fn set_size(&mut self, size: Size) {
+        if self.me().size == size {
+            return;
+        }
         let (tile, color) = {
             let w = self.me();
             (w.tile, w.color)
@@ -114,8 +120,11 @@ impl IconContext for Context<'_, Icon> {
     }
 
     fn set_sprite(&mut self, sprite: SpriteId) {
-        let color = self.me().color;
         let sprite = self.resource::<Atlas>().sprite(sprite);
+        if self.me().tile == sprite.tile && self.me().size == sprite.size {
+            return;
+        }
+        let color = self.me().color;
         self.set_paint(Paint::Monochrome(vec![MonochromeSprite::new(
             sprite.tile,
             Point::ZERO,
