@@ -39,11 +39,41 @@ impl Axis {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Overscroll {
+    /// Claim the contact and rubber-band.
+    #[default]
+    Bounce,
+    /// Cancel the press, unclaimed, for a gesture outside the `Scrollable`.
+    Yield,
+    /// `Yield` toward the start (top / left) only; `Bounce` at the end.
+    YieldStart,
+    /// `Yield` toward the end (bottom / right) only; `Bounce` at the start.
+    YieldEnd,
+}
+
+impl Overscroll {
+    fn yields(self, delta: f64) -> bool {
+        match self {
+            Overscroll::Bounce => false,
+            Overscroll::Yield => true,
+            Overscroll::YieldStart => delta < 0.0,
+            Overscroll::YieldEnd => delta > 0.0,
+        }
+    }
+}
+
+/// The slack, in logical px, within which an offset counts as resting
+/// at an end.
+const EDGE: f64 = 0.5;
+
 /// A vertical `Scrollable` with the default style for its axis.
 pub fn scrollable() -> ScrollableBuilder {
     ScrollableBuilder {
         style: None,
         axis: Axis::Vertical,
+        overscroll: Overscroll::default(),
     }
 }
 
@@ -51,6 +81,7 @@ pub struct ScrollableBuilder {
     /// `None` until set: the default depends on the axis.
     style: Option<LayoutStyle>,
     axis: Axis,
+    overscroll: Overscroll,
 }
 
 impl ScrollableBuilder {
@@ -67,6 +98,13 @@ impl ScrollableBuilder {
         self.axis = axis;
         self
     }
+
+    /// Whether a drag may start toward a resting end; [`Overscroll::Bounce`]
+    /// by default.
+    pub fn overscroll(mut self, overscroll: Overscroll) -> Self {
+        self.overscroll = overscroll;
+        self
+    }
 }
 
 impl Build for ScrollableBuilder {
@@ -77,6 +115,7 @@ impl Build for ScrollableBuilder {
 /// private; there is no API to read or set the offset.
 pub struct Scrollable {
     pub(crate) axis: Axis,
+    overscroll: Overscroll,
     pub(crate) state: State,
     /// The driving contact's recent positions, for the release speed.
     tracker: VelocityTracker,
@@ -148,6 +187,7 @@ impl Widget for Scrollable {
             .on::<PressCancelled>(me, |ctx, e| finish(ctx, e.contact, None));
         Scrollable {
             axis: b.axis,
+            overscroll: b.overscroll,
             state: State::Idle,
             tracker: VelocityTracker::default(),
             range: Range::new(0.0, 0.0),
@@ -218,12 +258,14 @@ fn on_press(ctx: &mut Context<'_, Scrollable>, e: &Press) {
 }
 
 /// Past the slop a tracked contact becomes the drag, and every tracked
-/// contact is claimed; a drag moves the content.
+/// contact is claimed, unless [`Overscroll`] yields it for heading toward a
+/// resting end; a drag moves the content.
 fn on_press_moved(ctx: &mut Context<'_, Scrollable>, e: &PressMoved) {
     let tuning = ctx.resource::<Tuning>().clone();
     let offset = current_offset(ctx);
     let me = ctx.me();
     let position = me.axis.of(e.position);
+    let (overscroll, range) = (me.overscroll, me.range);
     match &mut me.state {
         State::Tracking {
             pending,
@@ -235,6 +277,16 @@ fn on_press_moved(ctx: &mut Context<'_, Scrollable>, e: &PressMoved) {
             let p = &mut pending[i];
             p.tracker.add(e.time, position);
             if (position - p.origin).abs() <= tuning.slop {
+                return;
+            }
+            // Yield: not ours. End its press (no tap) but leave it unclaimed.
+            let toward = -(position - p.origin);
+            if overscroll.yields(toward) && !range.can_move(*start_offset, toward, EDGE) {
+                pending.remove(i);
+                if pending.is_empty() {
+                    me.state = State::Idle;
+                }
+                ctx.cancel_contact(e.contact);
                 return;
             }
             // The drag starts from the crossing point: no jump by the slop.
